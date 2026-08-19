@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DataShield.Console.EN</RootNamespace>
+    <AssemblyName>DataShield.Console.EN</AssemblyName>
+    <AssemblyTitle>DataShield.Console.EN</AssemblyTitle>
+    <Version>3.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>Artem Drobanov</Company>
+    <Copyright>Copyright (c) 2026 Artem Drobanov</Copyright>
+    <Product>DataShield</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DataShield.Console\DataShield.Console.csproj" />
+  </ItemGroup>
+
+</Project>
