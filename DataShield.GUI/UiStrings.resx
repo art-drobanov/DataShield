@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="ModeLabel" xml:space="preserve"><value>Mode:</value></data>
+  <data name="ModeEncode" xml:space="preserve"><value>Encode</value></data>
+  <data name="ModeDecode" xml:space="preserve"><value>Decode</value></data>
+  <data name="LanguageLabel" xml:space="preserve"><value>Language:</value></data>
+  <data name="LangEnglish" xml:space="preserve"><value>English</value></data>
+  <data name="LangRussian" xml:space="preserve"><value>Русский</value></data>
+  <data name="InputFileLabel" xml:space="preserve"><value>Input file:</value></data>
+  <data name="OutputFileLabel" xml:space="preserve"><value>Output file:</value></data>
+  <data name="UseSlotName" xml:space="preserve"><value>Use file name from stream header</value></data>
+  <data name="BrowseButton" xml:space="preserve"><value>Browse...</value></data>
+  <data name="FormatLabel" xml:space="preserve"><value>Format:</value></data>
+  <data name="RedundancyHeader" xml:space="preserve"><value>Redundancy</value></data>
+  <data name="EccLabel" xml:space="preserve"><value>ECC:</value></data>
+  <data name="HeadersLabel" xml:space="preserve"><value>Headers:</value></data>
+  <data name="RunButton" xml:space="preserve"><value>Run</value></data>
+  <data name="CancelButton" xml:space="preserve"><value>Cancel</value></data>
+  <data name="ProgressCaption" xml:space="preserve"><value>Progress</value></data>
+  <data name="ResultCaption" xml:space="preserve"><value>Result</value></data>
+  <data name="MapCaption" xml:space="preserve"><value>Sector validity map</value></data>
+  <data name="InputDialogEncodeTitle" xml:space="preserve"><value>Select file to encode</value></data>
+  <data name="InputDialogDecodeTitle" xml:space="preserve"><value>Select stream file</value></data>
+  <data name="FilterAllFiles" xml:space="preserve"><value>All files (*.*)|*.*</value></data>
+  <data name="FilterDecodeStream" xml:space="preserve"><value>DataShield stream (*.txt;*.bin;)|*.txt;*.bin;|All files (*.*)|*.*</value></data>
+  <data name="OutputDialogTitle" xml:space="preserve"><value>Save as</value></data>
+  <data name="FilterEncodeOutput" xml:space="preserve"><value>Base64 (*.txt)|*.txt|Binary (*.bin)|*.bin|All files (*.*)|*.*</value></data>
+  <data name="DefaultOutputName" xml:space="preserve"><value>output</value></data>
+  <data name="DefaultDecodeName" xml:space="preserve"><value>decoded.bin</value></data>
+  <data name="PhasePreparing" xml:space="preserve"><value>Preparing...</value></data>
+  <data name="StatusCancelled" xml:space="preserve"><value>Operation cancelled.</value></data>
+  <data name="StatusCancelling" xml:space="preserve"><value>Cancelling...</value></data>
+  <data name="StatusErrorFormat" xml:space="preserve"><value>Error: {0}</value></data>
+  <data name="StatusCompleted" xml:space="preserve"><value>Completed.</value></data>
+  <data name="StatusNoInput" xml:space="preserve"><value>Select an input file first.</value></data>
+  <data name="StatusEncodingFormat" xml:space="preserve"><value>Encoding: {0}</value></data>
+  <data name="StatusDecodingFormat" xml:space="preserve"><value>Decoding: {0}</value></data>
+  <data name="EncodeDoneFormat" xml:space="preserve"><value>Done: {0} B -&gt; {1} packets</value></data>
+  <data name="DecodeDoneFormat" xml:space="preserve"><value>Done: {0} B -&gt; {1}</value></data>
+  <data name="NoHeadersError" xml:space="preserve"><value>No headers detected. Nothing to assemble.</value></data>
+  <data name="NoDataError" xml:space="preserve"><value>No data to assemble.</value></data>
+  <data name="FailWithEccFormat" xml:space="preserve"><value>Assembly failed: more sectors are missing than the ECC (M={0}) can recover.</value></data>
+  <data name="FailNoEcc" xml:space="preserve"><value>Assembly failed (sectors are missing, no ECC in the stream).</value></data>
+  <data name="RInputFormat" xml:space="preserve"><value>Input format</value></data>
+  <data name="ROutputFormat" xml:space="preserve"><value>Output format</value></data>
+  <data name="RFileName" xml:space="preserve"><value>File name</value></data>
+  <data name="RSourceSize" xml:space="preserve"><value>Original size</value></data>
+  <data name="RSize" xml:space="preserve"><value>Size</value></data>
+  <data name="RSha256" xml:space="preserve"><value>SHA-256</value></data>
+  <data name="RDataVolumes" xml:space="preserve"><value>Data volumes (N)</value></data>
+  <data name="REccVolumes" xml:space="preserve"><value>ECC volumes (M)</value></data>
+  <data name="RTotalPackets" xml:space="preserve"><value>Total packets</value></data>
+  <data name="RHeaderCopies" xml:space="preserve"><value>Header copies</value></data>
+  <data name="RHeaders" xml:space="preserve"><value>Headers</value></data>
+  <data name="ROverhead" xml:space="preserve"><value>Overhead</value></data>
+  <data name="ROutputFile" xml:space="preserve"><value>Output file</value></data>
+  <data name="RMapFile" xml:space="preserve"><value>Map</value></data>
+  <data name="RSectors" xml:space="preserve"><value>Sectors</value></data>
+  <data name="BytesUnit" xml:space="preserve"><value>bytes</value></data>
+  <data name="RCoverage" xml:space="preserve"><value>coverage</value></data>
+  <data name="HeadersCopiesReceivedFormat" xml:space="preserve"><value>received {0} copies</value></data>
+  <data name="MapReportTitle" xml:space="preserve"><value>DataShield : Sector validity map</value></data>
+  <data name="MapHeadersCount" xml:space="preserve"><value>Headers</value></data>
+  <data name="MapTotal" xml:space="preserve"><value>Total</value></data>
+  <data name="MapPresent" xml:space="preserve"><value>Present</value></data>
+  <data name="MapMissing" xml:space="preserve"><value>Missing</value></data>
+  <data name="MapCoverage" xml:space="preserve"><value>Coverage</value></data>
+  <data name="MapLegend" xml:space="preserve"><value>Legend: '█' — intact, '▓' — collision, '░' — corrupted/missing</value></data>
+  <data name="MapLegendData" xml:space="preserve"><value>data</value></data>
+  <data name="MapLegendEcc" xml:space="preserve"><value>ECC</value></data>
+  <data name="MapLegendMissing" xml:space="preserve"><value>missing</value></data>
+  <data name="MapLegendCollision" xml:space="preserve"><value>collision</value></data>
+  <data name="MapEmpty" xml:space="preserve"><value>(map is empty)</value></data>
+</root>

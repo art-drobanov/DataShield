@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>DataShield.Codec.Packets</RootNamespace>
+    <AssemblyName>DataShield.Codec.Packets</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyTitle>DataShield.Codec.Packets</AssemblyTitle>
+    <Version>3.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>Artem Drobanov</Company>
+    <Authors>Artem Drobanov</Authors>
+    <Copyright>Copyright (c) 2026 Artem Drobanov</Copyright>
+    <Description>DataShield.Codec.Packets - wire format, header content and integrity/RS primitives</Description>
+    <Product>DataShield</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <!-- Эталонные реализации: источник для порта на C++, не редактируются -->
+  <ItemGroup>
+    <Compile Include="..\refs-src\Sha256Compact.cs" Link="refs-src\Sha256Compact.cs" />
+  </ItemGroup>
+
+</Project>

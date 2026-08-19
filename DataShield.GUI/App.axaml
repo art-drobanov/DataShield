@@ -1,0 +1,19 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="DataShield.Gui.App"
+             RequestedThemeVariant="Light">
+    <Application.Resources>
+        <!-- Акцентный цвет темы и его оттенки — синий со средней полосы семпла-палитры -->
+        <Color x:Key="SystemAccentColor">#176AB4</Color>
+        <Color x:Key="SystemAccentDark1">#124E80</Color>
+        <Color x:Key="SystemAccentDark2">#0E528C</Color>
+        <Color x:Key="SystemAccentDark3">#0A3A64</Color>
+        <Color x:Key="SystemAccentLight1">#4FB0E0</Color>
+        <Color x:Key="SystemAccentLight2">#7FC8EA</Color>
+        <Color x:Key="SystemAccentLight3">#B8DAEF</Color>
+    </Application.Resources>
+
+    <Application.Styles>
+        <FluentTheme />
+    </Application.Styles>
+</Application>

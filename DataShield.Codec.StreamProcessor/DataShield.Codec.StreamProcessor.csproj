@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>DataShield.Codec.StreamProcessor</RootNamespace>
+    <AssemblyName>DataShield.Codec.StreamProcessor</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyTitle>DataShield.Codec.StreamProcessor</AssemblyTitle>
+    <Version>3.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>Artem Drobanov</Company>
+    <Authors>Artem Drobanov</Authors>
+    <Copyright>Copyright (c) 2026 Artem Drobanov</Copyright>
+    <Description>DataShield.Codec.StreamProcessor - reception accumulator with detailed content assessment API</Description>
+    <Product>DataShield</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\refs-src\Mt19937.cs" Link="refs-src\Mt19937.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DataShield.Interfaces\DataShield.Interfaces.csproj" />
+    <ProjectReference Include="..\DataShield.Codec.Packets\DataShield.Codec.Packets.csproj" />
+    <ProjectReference Include="..\DataShield.Codec.Reporting\DataShield.Codec.Reporting.csproj" />
+    <ProjectReference Include="..\DataShield.Codec.Ecc\DataShield.Codec.Ecc.csproj" />
+  </ItemGroup>
+
+</Project>

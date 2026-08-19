@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>DataShield.Codec.Reporting</RootNamespace>
+    <AssemblyName>DataShield.Codec.Reporting</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyTitle>DataShield.Codec.Reporting</AssemblyTitle>
+    <Version>3.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>Artem Drobanov</Company>
+    <Authors>Artem Drobanov</Authors>
+    <Copyright>Copyright (c) 2026 Artem Drobanov</Copyright>
+    <Description>DataShield.Codec.Reporting - progress reporting and localized phase names for the codec</Description>
+    <Product>DataShield</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>

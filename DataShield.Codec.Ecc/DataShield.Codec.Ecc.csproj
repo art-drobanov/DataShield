@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>DataShield.Codec.Ecc</RootNamespace>
+    <AssemblyName>DataShield.Codec.Ecc</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyTitle>DataShield.Codec.Ecc</AssemblyTitle>
+    <Version>3.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>Artem Drobanov</Company>
+    <Authors>Artem Drobanov</Authors>
+    <Copyright>Copyright (c) 2026 Artem Drobanov</Copyright>
+    <Description>DataShield.Codec.Ecc - Reed-Solomon erasure coding over GF(2^16) for codec volumes</Description>
+    <Product>DataShield</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <!-- Эталонные реализации: источник для порта на C++, не редактируются -->
+  <ItemGroup>
+    <Compile Include="..\refs-src\GF16.cs" Link="refs-src\GF16.cs" />
+    <Compile Include="..\refs-src\RsRaid16.cs" Link="refs-src\RsRaid16.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DataShield.Codec.Reporting\DataShield.Codec.Reporting.csproj" />
+  </ItemGroup>
+
+</Project>

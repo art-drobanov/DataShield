@@ -1,0 +1,25 @@
+<Solution>
+  <Project Path="DataShield.Interfaces/DataShield.Interfaces.csproj" />
+  <Project Path="DataShield.Codec.Packets/DataShield.Codec.Packets.csproj" />
+  <Project Path="DataShield.Codec.IO/DataShield.Codec.IO.csproj" />
+  <Project Path="DataShield.Codec.StreamFilter/DataShield.Codec.StreamFilter.csproj" />
+  <Project Path="DataShield.Codec.StreamScanner/DataShield.Codec.StreamScanner.csproj" />
+  <Project Path="DataShield.Codec.Reporting/DataShield.Codec.Reporting.csproj" />
+  <Project Path="DataShield.Codec.Ecc/DataShield.Codec.Ecc.csproj" />
+  <Project Path="DataShield.Codec.StreamProcessor/DataShield.Codec.StreamProcessor.csproj" />
+  <Project Path="DataShield.Codec/DataShield.Codec.csproj" />
+  <Project Path="DataShield.Demo/DataShield.Demo.csproj" />
+  <Project Path="DataShield.GUI/DataShield.GUI.csproj" />
+  <Project Path="DataShield.Tests/DataShield.Tests.csproj" />
+  <Project Path="DataShield.TestsHarness/DataShield.TestsHarness.csproj" />
+  <Project Path="RsRaid16Demo/RsRaid16Demo.csproj" Id="782b69a9-5c56-43b9-a519-62bb8e1d3ea5" />
+  <Project Path="Sha256CompactDemo/Sha256CompactDemo.csproj" />
+  <Project Path="DataShield.Interfaces.Tests/DataShield.Interfaces.Tests.csproj" />
+  <Project Path="DataShield.Codec.Packets.Tests/DataShield.Codec.Packets.Tests.csproj" />
+  <Project Path="DataShield.Codec.IO.Tests/DataShield.Codec.IO.Tests.csproj" />
+  <Project Path="DataShield.Codec.StreamFilter.Tests/DataShield.Codec.StreamFilter.Tests.csproj" />
+  <Project Path="DataShield.Codec.StreamScanner.Tests/DataShield.Codec.StreamScanner.Tests.csproj" />
+  <Project Path="DataShield.Codec.StreamProcessor.Tests/DataShield.Codec.StreamProcessor.Tests.csproj" />
+  <Project Path="DataShield.Codec.Reporting.Tests/DataShield.Codec.Reporting.Tests.csproj" />
+  <Project Path="DataShield.Codec.Ecc.Tests/DataShield.Codec.Ecc.Tests.csproj" />
+</Solution>

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>DataShield.Codec.StreamFilter</RootNamespace>
+    <AssemblyName>DataShield.Codec.StreamFilter</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyTitle>DataShield.Codec.StreamFilter</AssemblyTitle>
+    <Version>3.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>Artem Drobanov</Company>
+    <Authors>Artem Drobanov</Authors>
+    <Copyright>Copyright (c) 2026 Artem Drobanov</Copyright>
+    <Description>DataShield.Codec.StreamFilter - byte stream range filter</Description>
+    <Product>DataShield</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DataShield.Interfaces\DataShield.Interfaces.csproj" />
+  </ItemGroup>
+
+</Project>
