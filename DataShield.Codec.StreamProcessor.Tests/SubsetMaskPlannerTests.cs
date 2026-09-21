@@ -1,4 +1,4 @@
-using DataShield.Codec.StreamProcessor.Subsets;
+﻿using DataShield.Codec.StreamProcessor.Subsets;
 using DataShield.Codec.StreamProcessor.Versions;
 using Xunit;
 

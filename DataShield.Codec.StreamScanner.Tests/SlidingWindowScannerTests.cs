@@ -1,4 +1,4 @@
-using DataShield.Codec.StreamScanner;
+﻿using DataShield.Codec.StreamScanner;
 using DataShield.Interfaces;
 
 namespace DataShield.Codec.StreamScanner.Tests;

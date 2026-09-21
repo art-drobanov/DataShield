@@ -1,10 +1,10 @@
-<Solution>
+﻿<Solution>
   <Folder Name="/Demo/">
     <Project Path="DataShield.CollisionBench/DataShield.CollisionBench.csproj" />
     <Project Path="DataShield.Console.Demo/DataShield.Console.Demo.csproj" />
     <Project Path="DataShield.Demo/DataShield.Demo.csproj" />
     <Project Path="RsRaid16Demo/RsRaid16Demo.csproj" Id="782b69a9-5c56-43b9-a519-62bb8e1d3ea5" />
-    <Project Path="Sha256CompactDemo/Sha256CompactDemo.csproj" />
+    <Project Path="ShaCompactDemo/ShaCompactDemo.csproj" />
   </Folder>
   <Folder Name="/Tests/">
     <Project Path="DataShield.Codec.Ecc.Tests/DataShield.Codec.Ecc.Tests.csproj" />

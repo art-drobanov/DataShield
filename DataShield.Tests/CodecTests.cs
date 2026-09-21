@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using DataShield.Codec;
 using DataShield.Codec.Ecc;
 using DataShield.Codec.Packets;

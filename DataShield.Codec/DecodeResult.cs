@@ -1,4 +1,4 @@
-using DataShield.Codec.StreamProcessor;
+﻿using DataShield.Codec.StreamProcessor;
 
 namespace DataShield.Codec;
 

@@ -1,4 +1,4 @@
-using DataShield.Codec.Packets;
+﻿using DataShield.Codec.Packets;
 using DataShield.Codec.StreamProcessor.Versions;
 using DataShield.Interfaces;
 
@@ -32,6 +32,16 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
     // Порог применимости схемы VirtualIndex: максимум N+M томов на слот
     private readonly int _virtualIndexSectorLimit;
 
+    // Режим работы с сигнатурными пакетами SHA-512 (см. SignatureMode)
+    private readonly SignatureMode _signatureMode;
+
+    // Уникальные сигнатуры SHA-512 из принятых сигнатурных пакетов (копии
+    // не накапливаются — смысла нет). В режиме Base не заполняется.
+    private readonly List<byte[]> _signatures = new();
+
+    // Счётчик принятых сигнатурных пакетов (с учётом копий)
+    private int _signaturePacketCount;
+
     // Слоты приёма (аккумуляторы заголовков и секторов)
     private readonly List<ReceptionSlot> _slots = new();
 
@@ -44,6 +54,57 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
 
     /// <summary>Порог применимости схемы VirtualIndex по числу томов (N+M).</summary>
     public int VirtualIndexSectorLimit => _virtualIndexSectorLimit;
+
+    /// <summary>Режим работы с сигнатурными пакетами SHA-512.</summary>
+    public SignatureMode SignatureMode => _signatureMode;
+
+    /// <summary>Принято сигнатурных пакетов SHA-512 (с учётом копий).</summary>
+    public int SignaturePacketCount
+    {
+        get { lock (_state) return _signaturePacketCount; }
+    }
+
+    /// <summary>Уникальные принятые сигнатуры SHA-512 (снимок).</summary>
+    public IReadOnlyList<byte[]> AcceptedSignatures
+    {
+        get { lock (_state) return _signatures.ToArray(); }
+    }
+
+    /// <summary>
+    /// Активна ли расширенная проверка SHA-512: Force — всегда; Auto — при
+    /// наличии хотя бы одной принятой сигнатуры; Base — никогда.
+    /// </summary>
+    public bool SignatureCheckActive
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _signatureMode switch
+                {
+                    SignatureMode.Base => false,
+                    SignatureMode.Force => true,
+                    _ => _signatures.Count > 0,
+                };
+            }
+        }
+    }
+
+    /// <summary>
+    /// Сигнатуры для расширенной проверки сборки: снимок уникальных
+    /// сигнатур, если проверка активна (<see cref="SignatureCheckActive"/>),
+    /// иначе null (проверка отключена).
+    /// </summary>
+    public IReadOnlyList<byte[]>? SignaturesForCheck()
+    {
+        lock (_state)
+        {
+            if (_signatureMode == SignatureMode.Base) return null;
+            if (_signatureMode == SignatureMode.Auto && _signatures.Count == 0)
+                return null;
+            return _signatures.ToArray();
+        }
+    }
 
     /// <summary>
     /// Создать накопитель с настройками поиска версий секторов
@@ -61,11 +122,17 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
     /// Порог схемы VirtualIndex: слоты с N+M выше порога проверяются
     /// только по классической схеме.
     /// </param>
+    /// <param name="signatureMode">
+    /// Режим работы с сигнатурными пакетами SHA-512: Base — детект без
+    /// влияния на сборку; Auto (по умолчанию) — расширенная проверка при
+    /// приёме хотя бы одного сигнатурного пакета; Force — проверка всегда.
+    /// </param>
     public StreamProcessor(
         SectorVersionSearchOptions? searchOptions = null,
         int bufferSize = 1200,
         SectorScheme sectorScheme = SectorScheme.Classic,
-        int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit)
+        int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit,
+        SignatureMode signatureMode = SignatureMode.Auto)
         : base(bufferSize)
     {
         if (!Enum.IsDefined(sectorScheme))
@@ -74,6 +141,8 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
             throw new ArgumentOutOfRangeException(
                 nameof(virtualIndexSectorLimit),
                 $"Порог должен быть в диапазоне 1..{VirtualIndexHasher.DefaultSectorLimit}.");
+        if (!Enum.IsDefined(signatureMode))
+            throw new ArgumentOutOfRangeException(nameof(signatureMode));
 
         _searchOptions =
             searchOptions ??
@@ -82,6 +151,7 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
         _searchOptions.Validate();
         _sectorScheme = sectorScheme;
         _virtualIndexSectorLimit = virtualIndexSectorLimit;
+        _signatureMode = signatureMode;
     }
 
     /// <summary>Все накопленные слоты приёма (снимок).</summary>
@@ -158,6 +228,9 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
         lock (_state)
         {
             _slots.Clear();
+            foreach (var signature in _signatures) Array.Clear(signature, 0, signature.Length);
+            _signatures.Clear();
+            _signaturePacketCount = 0;
             _pendingFill = 0;
             Array.Clear(_pending, 0, _pending.Length);
         }
@@ -172,8 +245,9 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
 
     /// <summary>
     /// Предикат распознавания пакета без побочных эффектов: автономный хеш
-    /// заголовка либо хеш сектора под один из известных заголовков.
-    /// Используется делегатом окна сканера для решения о продвижении.
+    /// заголовка, автономный тег сигнатурного пакета SHA-512 либо хеш
+    /// сектора под один из известных заголовков. Используется делегатом
+    /// окна сканера для решения о продвижении.
     /// </summary>
     /// <param name="packet">Кандидат-пакет (75 байт).</param>
     /// <returns>true — пакет будет принят накопителем.</returns>
@@ -182,6 +256,7 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
         if (packet.Length != PacketFormat.PacketSize) return false;
 
         if (IsHeaderPacket(packet)) return true;
+        if (SignaturePacket.Verify(packet)) return true;
 
         lock (_state)
         {
@@ -232,8 +307,9 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
 
     /// <summary>
     /// Маршрутизация принятого пакета: заголовок попадает в соответствующий
-    /// слот (существующий или новый), сектор — во все слоты, под которые он
-    /// подходит. Возвращает true, если пакет принят хотя бы одним слотом.
+    /// слот (существующий или новый), сигнатурный пакет — в накопитель
+    /// сигнатур (Base — только счётчик), сектор — во все слоты, под которые
+    /// он подходит. Возвращает true, если пакет принят хотя бы одним путём.
     /// </summary>
     private bool AcceptPacket(byte[] packet, out ReceptionSlot? newSlot)
     {
@@ -246,11 +322,41 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
         newSlot = null;
 
         var accepted = false;
+
+        // Сигнатурный пакет не привязан к файлу и не влияет на дальнейший
+        // парсинг: его блоб дополнительно проверяется путём секторов ниже,
+        // ложная коллизия неопасна (критерий «любой из» на финале).
+        if (SignaturePacket.Verify(packet))
+        {
+            AcceptSignature(packet);
+            accepted = true;
+        }
+
         foreach (var slot in _slots)
             if (AcceptSectorForSlot(packet, slot))
                 accepted = true;
 
         return accepted;
+    }
+
+    /// <summary>
+    /// Принять сигнатурный пакет: счётчик копий всегда; уникальная
+    /// сигнатура S1 сохраняется в режимах Auto/Force (копии не накапливаются).
+    /// </summary>
+    private void AcceptSignature(byte[] packet)
+    {
+        _signaturePacketCount++;
+
+        if (_signatureMode == SignatureMode.Base)
+            return;
+
+        var signature = packet.AsSpan(0, PacketFormat.SignatureSize);
+
+        foreach (var existing in _signatures)
+            if (signature.SequenceEqual(existing))
+                return;
+
+        _signatures.Add(signature.ToArray());
     }
 
     /// <summary>

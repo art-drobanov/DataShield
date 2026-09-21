@@ -1,4 +1,4 @@
-using DataShield.Codec.Packets;
+﻿using DataShield.Codec.Packets;
 using DataShield.Codec.Reporting;
 
 namespace DataShield.Codec;
@@ -35,6 +35,33 @@ public interface IDataShieldCodec : IDisposable
 
     /// <summary>Порог применимости схемы VirtualIndex по числу томов (N+M).</summary>
     int VirtualIndexSectorLimit { get; }
+
+    /// <summary>
+    /// Сигнатурные пакеты SHA-512 при кодировании: за каждой копией
+    /// заголовка следует сигнатурный пакет SHA-512 содержимого.
+    /// </summary>
+    bool SignaturePackets512 { get; }
+
+    /// <summary>
+    /// Секрет хеширования операций кодека (null/пустая — без секрета).
+    /// Контекстен: действует на время операции, не «протекает» в другие
+    /// сессии; при декодировании должен совпадать с секретом кодирования.
+    /// </summary>
+    string? HashSecret { get; }
+
+    /// <summary>
+    /// Режим декодера для сигнатурных пакетов SHA-512 (base/auto/force).
+    /// </summary>
+    SignatureMode SignatureMode { get; }
+
+    /// <summary>Принято сигнатурных пакетов SHA-512 (с учётом копий).</summary>
+    int SignaturePacketCount { get; }
+
+    /// <summary>Активна ли расширенная проверка SHA-512 при декодировании.</summary>
+    bool SignatureCheckActive { get; }
+
+    /// <summary>Уникальные принятые сигнатуры SHA-512 (снимок).</summary>
+    IReadOnlyList<byte[]> AcceptedSignatures { get; }
 
     // ── Кодирование ─────────────────────────────────────────────────────────
 

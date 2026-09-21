@@ -1,4 +1,4 @@
-namespace DataShield.Codec.StreamProcessor.Versions;
+﻿namespace DataShield.Codec.StreamProcessor.Versions;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Снимок принятой версии сектора (публичное API ReceptionSlot)

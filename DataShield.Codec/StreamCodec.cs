@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using DataShield.Codec.Ecc;
 using DataShield.Codec.Packets;
 using DataShield.Codec.Reporting;
@@ -72,12 +72,12 @@ public abstract class StreamCodec : IDisposable
     }
 
     /// <summary>
-    /// Проверить самотест SHA-256: реализация хеша должна быть верифицирована
-    /// перед каждой операцией кодека.
+    /// Проверить самотест хешей: реализации SHA-256/SHA-512 (включая режим
+    /// «с секретом») должны быть верифицированы перед каждой операцией кодека.
     /// </summary>
     protected static void VerifySha256()
     {
-        if (!Sha256Compact.Test())
+        if (!Sha256Secure.Test() || !Sha512Secure.Test())
             throw new InvalidOperationException(CodecErrors.Sha256SelfTestFailed);
     }
 

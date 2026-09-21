@@ -1,5 +1,110 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <root>
+  <!-- 
+    Microsoft ResX Schema 
+    
+    Version 2.0
+    
+    The primary goals of this format is to allow a simple XML format 
+    that is mostly human readable. The generation and parsing of the 
+    various data types are done through the TypeConverter classes 
+    associated with the data types.
+    
+    Example:
+    
+    ... ado.net/XML headers & schema ...
+    <resheader name="resmimetype">text/microsoft-resx</resheader>
+    <resheader name="version">2.0</resheader>
+    <resheader name="reader">System.Resources.ResXResourceReader, System.Windows.Forms, ...</resheader>
+    <resheader name="writer">System.Resources.ResXResourceWriter, System.Windows.Forms, ...</resheader>
+    <data name="Name1"><value>this is my long string</value><comment>this is a comment</comment></data>
+    <data name="Color1" type="System.Drawing.Color, System.Drawing">Blue</data>
+    <data name="Bitmap1" mimetype="application/x-microsoft.net.object.binary.base64">
+        <value>[base64 mime encoded serialized .NET Framework object]</value>
+    </data>
+    <data name="Icon1" type="System.Drawing.Icon, System.Drawing" mimetype="application/x-microsoft.net.object.bytearray.base64">
+        <value>[base64 mime encoded string representing a byte array form of the .NET Framework object]</value>
+        <comment>This is a comment</comment>
+    </data>
+                
+    There are any number of "resheader" rows that contain simple 
+    name/value pairs.
+    
+    Each data row contains a name, and value. The row also contains a 
+    type or mimetype. Type corresponds to a .NET class that support 
+    text/value conversion through the TypeConverter architecture. 
+    Classes that don't support this are serialized and stored with the 
+    mimetype set.
+    
+    The mimetype is used for serialized objects, and tells the 
+    ResXResourceReader how to depersist the object. This is currently not 
+    extensible. For a given mimetype the value must be set accordingly:
+    
+    Note - application/x-microsoft.net.object.binary.base64 is the format 
+    that the ResXResourceWriter will generate, however the reader can 
+    read any of the formats listed below.
+    
+    mimetype: application/x-microsoft.net.object.binary.base64
+    value   : The object must be serialized with 
+            : System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
+            : and then encoded with base64 encoding.
+    
+    mimetype: application/x-microsoft.net.object.soap.base64
+    value   : The object must be serialized with 
+            : System.Runtime.Serialization.Formatters.Soap.SoapFormatter
+            : and then encoded with base64 encoding.
+
+    mimetype: application/x-microsoft.net.object.bytearray.base64
+    value   : The object must be serialized into a byte array 
+            : using a System.ComponentModel.TypeConverter
+            : and then encoded with base64 encoding.
+    -->
+  <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:import namespace="http://www.w3.org/XML/1998/namespace" />
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="metadata">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" />
+              </xsd:sequence>
+              <xsd:attribute name="name" use="required" type="xsd:string" />
+              <xsd:attribute name="type" type="xsd:string" />
+              <xsd:attribute name="mimetype" type="xsd:string" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="assembly">
+            <xsd:complexType>
+              <xsd:attribute name="alias" type="xsd:string" />
+              <xsd:attribute name="name" type="xsd:string" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" msdata:Ordinal="1" />
+              <xsd:attribute name="type" type="xsd:string" msdata:Ordinal="3" />
+              <xsd:attribute name="mimetype" type="xsd:string" msdata:Ordinal="4" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
   <resheader name="resmimetype">
     <value>text/microsoft-resx</value>
   </resheader>
@@ -12,68 +117,220 @@
   <resheader name="writer">
     <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </resheader>
-  <data name="ModeLabel" xml:space="preserve"><value>Режим:</value></data>
-  <data name="ModeEncode" xml:space="preserve"><value>Кодирование</value></data>
-  <data name="ModeDecode" xml:space="preserve"><value>Декодирование</value></data>
-  <data name="LanguageLabel" xml:space="preserve"><value>Язык:</value></data>
-  <data name="LangEnglish" xml:space="preserve"><value>English</value></data>
-  <data name="LangRussian" xml:space="preserve"><value>Русский</value></data>
-  <data name="InputFileLabel" xml:space="preserve"><value>Входной файл:</value></data>
-  <data name="OutputFileLabel" xml:space="preserve"><value>Выходной файл:</value></data>
-  <data name="UseSlotName" xml:space="preserve"><value>Имя выходного файла — из заголовка потока</value></data>
-  <data name="BrowseButton" xml:space="preserve"><value>Обзор...</value></data>
-  <data name="FormatLabel" xml:space="preserve"><value>Формат:</value></data>
-  <data name="VirtualIndexSchemeLabel" xml:space="preserve"><value>Схема секторов с виртуальным индексом (эффективна для малых файлов)</value></data>
-  <data name="RedundancyHeader" xml:space="preserve"><value>Избыточность</value></data>
-  <data name="EccLabel" xml:space="preserve"><value>ECC:</value></data>
-  <data name="HeadersLabel" xml:space="preserve"><value>Заголовки:</value></data>
-  <data name="RunButton" xml:space="preserve"><value>Запуск</value></data>
-  <data name="CancelButton" xml:space="preserve"><value>Отмена</value></data>
-  <data name="ProgressCaption" xml:space="preserve"><value>Прогресс</value></data>
-  <data name="ResultCaption" xml:space="preserve"><value>Результат</value></data>
-  <data name="MapCaption" xml:space="preserve"><value>Карта валидности секторов</value></data>
-  <data name="InputDialogEncodeTitle" xml:space="preserve"><value>Выбрать файл для кодирования</value></data>
-  <data name="InputDialogDecodeTitle" xml:space="preserve"><value>Выбрать файл потока</value></data>
-  <data name="FilterAllFiles" xml:space="preserve"><value>Все файлы (*.*)|*.*</value></data>
-  <data name="FilterDecodeStream" xml:space="preserve"><value>DataShield поток (*.txt;*.bin;)|*.txt;*.bin;|Все файлы (*.*)|*.*</value></data>
-  <data name="OutputDialogTitle" xml:space="preserve"><value>Сохранить как</value></data>
-  <data name="FilterEncodeOutput" xml:space="preserve"><value>Base64 (*.txt)|*.txt|Binary (*.bin)|*.bin|Все файлы (*.*)|*.*</value></data>
-  <data name="DefaultOutputName" xml:space="preserve"><value>output</value></data>
-  <data name="DefaultDecodeName" xml:space="preserve"><value>decoded.bin</value></data>
-  <data name="PhasePreparing" xml:space="preserve"><value>Подготовка...</value></data>
-  <data name="StatusCancelled" xml:space="preserve"><value>Операция отменена.</value></data>
-  <data name="StatusCancelling" xml:space="preserve"><value>Отмена...</value></data>
-  <data name="StatusErrorFormat" xml:space="preserve"><value>Ошибка: {0}</value></data>
-  <data name="StatusCompleted" xml:space="preserve"><value>Завершено.</value></data>
-  <data name="StatusNoInput" xml:space="preserve"><value>Сначала выберите входной файл.</value></data>
-  <data name="StatusEncodingFormat" xml:space="preserve"><value>Кодирование: {0}</value></data>
-  <data name="StatusDecodingFormat" xml:space="preserve"><value>Декодирование: {0}</value></data>
-  <data name="EncodeDoneFormat" xml:space="preserve"><value>Готово: {0} Б -&gt; {1} пакетов</value></data>
-  <data name="DecodeDoneFormat" xml:space="preserve"><value>Готово: {0} Б -&gt; {1}</value></data>
-  <data name="NoHeadersError" xml:space="preserve"><value>Заголовки не обнаружены. Нет данных для сборки.</value></data>
-  <data name="NoDataError" xml:space="preserve"><value>Нет данных для сборки.</value></data>
-  <data name="FailWithEccFormat" xml:space="preserve"><value>Не удалось собрать: пропусков больше, чем ECC (M={0}) может восстановить.</value></data>
-  <data name="FailNoEcc" xml:space="preserve"><value>Не удалось собрать (есть пропуски, ECC в потоке нет).</value></data>
-  <data name="RInputFormat" xml:space="preserve"><value>Формат входа</value></data>
-  <data name="ROutputFormat" xml:space="preserve"><value>Формат вывода</value></data>
-  <data name="RFileName" xml:space="preserve"><value>Имя файла</value></data>
-  <data name="RSourceSize" xml:space="preserve"><value>Исходный размер</value></data>
-  <data name="RSize" xml:space="preserve"><value>Размер</value></data>
-  <data name="RSha256" xml:space="preserve"><value>SHA-256</value></data>
-  <data name="RDataVolumes" xml:space="preserve"><value>Data-томов (N)</value></data>
-  <data name="REccVolumes" xml:space="preserve"><value>ECC-томов (M)</value></data>
-  <data name="RTotalPackets" xml:space="preserve"><value>Всего пакетов</value></data>
-  <data name="RHeaderCopies" xml:space="preserve"><value>Копий заголовка</value></data>
-  <data name="RHeaders" xml:space="preserve"><value>Заголовки</value></data>
-  <data name="ROverhead" xml:space="preserve"><value>Накладные</value></data>
-  <data name="ROutputFile" xml:space="preserve"><value>Выходной файл</value></data>
-  <data name="RMapFile" xml:space="preserve"><value>Карта</value></data>
-  <data name="RSectors" xml:space="preserve"><value>Секторов</value></data>
-  <data name="BytesUnit" xml:space="preserve"><value>байт</value></data>
-  <data name="RCoverage" xml:space="preserve"><value>покрытие</value></data>
-  <data name="HeadersCopiesReceivedFormat" xml:space="preserve"><value>принято {0} копий</value></data>
-  <data name="MapLegendData" xml:space="preserve"><value>данные</value></data>
-  <data name="MapLegendEcc" xml:space="preserve"><value>ECC</value></data>
-  <data name="MapLegendMissing" xml:space="preserve"><value>пропущен</value></data>
-  <data name="MapLegendCollision" xml:space="preserve"><value>коллизия</value></data>
+  <data name="ModeLabel" xml:space="preserve">
+    <value>Режим:</value>
+  </data>
+  <data name="ModeEncode" xml:space="preserve">
+    <value>Кодирование</value>
+  </data>
+  <data name="ModeDecode" xml:space="preserve">
+    <value>Декодирование</value>
+  </data>
+  <data name="LanguageLabel" xml:space="preserve">
+    <value>Язык:</value>
+  </data>
+  <data name="LangEnglish" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="LangRussian" xml:space="preserve">
+    <value>Русский</value>
+  </data>
+  <data name="InputFileLabel" xml:space="preserve">
+    <value>Входной файл:</value>
+  </data>
+  <data name="OutputFileLabel" xml:space="preserve">
+    <value>Выходной файл:</value>
+  </data>
+  <data name="UseSlotName" xml:space="preserve">
+    <value>Имя выходного файла — из заголовка потока</value>
+  </data>
+  <data name="BrowseButton" xml:space="preserve">
+    <value>Обзор...</value>
+  </data>
+  <data name="FormatLabel" xml:space="preserve">
+    <value>Формат:</value>
+  </data>
+  <data name="VirtualIndexSchemeLabel" xml:space="preserve">
+    <value>Схема секторов с виртуальным индексом (эффективна для малых файлов)</value>
+  </data>
+  <data name="SignaturePacketsLabel" xml:space="preserve">
+    <value>Сигнатурные пакеты SHA-512</value>
+  </data>
+  <data name="SignatureModeLabel" xml:space="preserve">
+    <value>Проверка SHA-512:</value>
+  </data>
+  <data name="SigModeBase" xml:space="preserve">
+    <value>base (выключена)</value>
+  </data>
+  <data name="SigModeAuto" xml:space="preserve">
+    <value>auto</value>
+  </data>
+  <data name="SigModeForce" xml:space="preserve">
+    <value>force</value>
+  </data>
+  <data name="HashSecretLabel" xml:space="preserve">
+    <value>Хеш-секрет:</value>
+  </data>
+  <data name="RedundancyHeader" xml:space="preserve">
+    <value>Избыточность</value>
+  </data>
+  <data name="EccLabel" xml:space="preserve">
+    <value>ECC:</value>
+  </data>
+  <data name="HeadersLabel" xml:space="preserve">
+    <value>Заголовки:</value>
+  </data>
+  <data name="RunButton" xml:space="preserve">
+    <value>Запуск</value>
+  </data>
+  <data name="CancelButton" xml:space="preserve">
+    <value>Отмена</value>
+  </data>
+  <data name="ProgressCaption" xml:space="preserve">
+    <value>Прогресс</value>
+  </data>
+  <data name="ResultCaption" xml:space="preserve">
+    <value>Результат</value>
+  </data>
+  <data name="MapCaption" xml:space="preserve">
+    <value>Карта валидности секторов</value>
+  </data>
+  <data name="InputDialogEncodeTitle" xml:space="preserve">
+    <value>Выбрать файл для кодирования</value>
+  </data>
+  <data name="InputDialogDecodeTitle" xml:space="preserve">
+    <value>Выбрать файл потока</value>
+  </data>
+  <data name="FilterAllFiles" xml:space="preserve">
+    <value>Все файлы (*.*)|*.*</value>
+  </data>
+  <data name="FilterDecodeStream" xml:space="preserve">
+    <value>DataShield поток (*.txt;*.bin;)|*.txt;*.bin;|Все файлы (*.*)|*.*</value>
+  </data>
+  <data name="OutputDialogTitle" xml:space="preserve">
+    <value>Сохранить как</value>
+  </data>
+  <data name="FilterEncodeOutput" xml:space="preserve">
+    <value>Base64 (*.txt)|*.txt|Binary (*.bin)|*.bin|Все файлы (*.*)|*.*</value>
+  </data>
+  <data name="DefaultOutputName" xml:space="preserve">
+    <value>output</value>
+  </data>
+  <data name="DefaultDecodeName" xml:space="preserve">
+    <value>decoded.bin</value>
+  </data>
+  <data name="PhasePreparing" xml:space="preserve">
+    <value>Подготовка...</value>
+  </data>
+  <data name="StatusCancelled" xml:space="preserve">
+    <value>Операция отменена.</value>
+  </data>
+  <data name="StatusCancelling" xml:space="preserve">
+    <value>Отмена...</value>
+  </data>
+  <data name="StatusErrorFormat" xml:space="preserve">
+    <value>Ошибка: {0}</value>
+  </data>
+  <data name="StatusCompleted" xml:space="preserve">
+    <value>Завершено.</value>
+  </data>
+  <data name="StatusNoInput" xml:space="preserve">
+    <value>Сначала выберите входной файл.</value>
+  </data>
+  <data name="StatusEncodingFormat" xml:space="preserve">
+    <value>Кодирование: {0}</value>
+  </data>
+  <data name="StatusDecodingFormat" xml:space="preserve">
+    <value>Декодирование: {0}</value>
+  </data>
+  <data name="EncodeDoneFormat" xml:space="preserve">
+    <value>Готово: {0} Б -&gt; {1} пакетов</value>
+  </data>
+  <data name="DecodeDoneFormat" xml:space="preserve">
+    <value>Готово: {0} Б -&gt; {1}</value>
+  </data>
+  <data name="NoHeadersError" xml:space="preserve">
+    <value>Заголовки не обнаружены. Нет данных для сборки.</value>
+  </data>
+  <data name="NoDataError" xml:space="preserve">
+    <value>Нет данных для сборки.</value>
+  </data>
+  <data name="FailWithEccFormat" xml:space="preserve">
+    <value>Не удалось собрать: пропусков больше, чем ECC (M={0}) может восстановить.</value>
+  </data>
+  <data name="FailNoEcc" xml:space="preserve">
+    <value>Не удалось собрать (есть пропуски, ECC в потоке нет).</value>
+  </data>
+  <data name="RInputFormat" xml:space="preserve">
+    <value>Формат входа</value>
+  </data>
+  <data name="ROutputFormat" xml:space="preserve">
+    <value>Формат вывода</value>
+  </data>
+  <data name="RFileName" xml:space="preserve">
+    <value>Имя файла</value>
+  </data>
+  <data name="RSourceSize" xml:space="preserve">
+    <value>Исходный размер</value>
+  </data>
+  <data name="RSize" xml:space="preserve">
+    <value>Размер</value>
+  </data>
+  <data name="RSha256" xml:space="preserve">
+    <value>SHA-256</value>
+  </data>
+  <data name="RSha512" xml:space="preserve">
+    <value>SHA-512</value>
+  </data>
+  <data name="RSignatures" xml:space="preserve">
+    <value>Сигнатуры</value>
+  </data>
+  <data name="RDataVolumes" xml:space="preserve">
+    <value>Data-томов (N)</value>
+  </data>
+  <data name="REccVolumes" xml:space="preserve">
+    <value>ECC-томов (M)</value>
+  </data>
+  <data name="RTotalPackets" xml:space="preserve">
+    <value>Всего пакетов</value>
+  </data>
+  <data name="RHeaderCopies" xml:space="preserve">
+    <value>Копий заголовка</value>
+  </data>
+  <data name="RHeaders" xml:space="preserve">
+    <value>Заголовки</value>
+  </data>
+  <data name="ROverhead" xml:space="preserve">
+    <value>Накладные</value>
+  </data>
+  <data name="ROutputFile" xml:space="preserve">
+    <value>Выходной файл</value>
+  </data>
+  <data name="RMapFile" xml:space="preserve">
+    <value>Отчет</value>
+  </data>
+  <data name="RSectors" xml:space="preserve">
+    <value>Секторов</value>
+  </data>
+  <data name="BytesUnit" xml:space="preserve">
+    <value>байт</value>
+  </data>
+  <data name="RCoverage" xml:space="preserve">
+    <value>покрытие</value>
+  </data>
+  <data name="HeadersCopiesReceivedFormat" xml:space="preserve">
+    <value>принято {0} копий</value>
+  </data>
+  <data name="MapLegendData" xml:space="preserve">
+    <value>данные</value>
+  </data>
+  <data name="MapLegendEcc" xml:space="preserve">
+    <value>ECC</value>
+  </data>
+  <data name="MapLegendMissing" xml:space="preserve">
+    <value>пропущен</value>
+  </data>
+  <data name="MapLegendCollision" xml:space="preserve">
+    <value>коллизия</value>
+  </data>
 </root>

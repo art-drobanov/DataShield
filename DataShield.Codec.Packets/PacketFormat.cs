@@ -1,4 +1,4 @@
-namespace DataShield.Codec.Packets;
+﻿namespace DataShield.Codec.Packets;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Константы формата пакета
@@ -22,6 +22,15 @@ namespace DataShield.Codec.Packets;
 ///   D2 [2..65]   Payload      (64 байта)
 ///   D3 [66..74]  SectorHash   (9 байт — Trunc9(SHA-256(H5 ‖ D1 ‖ D2)))
 /// </code>
+///
+/// <b>Сигнатурный пакет SHA-512</b> (75 байт):
+/// <code>
+///   S1 [0..63]   Signature    (64 байта — SHA-512 содержимого файла)
+///   S2 [64..74]  SignatureTag (11 байт — Trunc11(SHA-512(S1)))
+/// </code>
+/// Сигнатурный пакет не привязан явно к файлу: S2 проверяется автономно
+/// (ложное срабатывание 2⁻⁸⁸), подтверждение файлом — критерием «любой из»
+/// на финальной проверке Exact(SHA-256) &amp; Any(SHA-512).
 ///
 /// Хеш заголовка (H5) проверяется автономно — это позволяет классифицировать
 /// пакеты при сканировании (ложное срабатывание 2⁻¹⁹²). Хеш сектора (D3)
@@ -49,6 +58,17 @@ public static class PacketFormat
 
     /// <summary>Смещение хеша сектора в пакете: 66.</summary>
     public const int SectorHashOffset = SectorContentSize; // 66
+
+    // ── Сигнатурный пакет SHA-512 ────────────────────────────────────────────
+
+    /// <summary>S1: размер сигнатуры SHA-512 содержимого файла: 64 байта.</summary>
+    public const int SignatureSize = 64;
+
+    /// <summary>S2: размер усечённого хеша сигнатуры: 11 байт (88 бит).</summary>
+    public const int SignatureTagSize = 11;
+
+    /// <summary>Смещение тега сигнатуры в пакете: 64.</summary>
+    public const int SignatureTagOffset = SignatureSize; // 64
 
     // ── Поля заголовка ───────────────────────────────────────────────────────
 

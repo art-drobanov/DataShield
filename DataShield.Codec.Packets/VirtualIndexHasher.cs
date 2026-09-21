@@ -1,4 +1,4 @@
-using DataShield.Codec.Reporting;
+﻿using DataShield.Codec.Reporting;
 
 namespace DataShield.Codec.Packets;
 
@@ -91,7 +91,7 @@ public static class VirtualIndexHasher
         input[^2] = (byte)(sectorIndex & 0xFF);
         input[^1] = (byte)((sectorIndex >> 8) & 0xFF);
 
-        Sha256Compact.HashData(input, full);
+        Sha256Secure.HashData(input, full);
         full[..HashSize].CopyTo(hash);
     }
 

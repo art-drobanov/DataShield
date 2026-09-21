@@ -1,4 +1,4 @@
-using DataShield.Codec.StreamFilter;
+﻿using DataShield.Codec.StreamFilter;
 using DataShield.Interfaces;
 
 namespace DataShield.Codec.StreamFilter.Tests;

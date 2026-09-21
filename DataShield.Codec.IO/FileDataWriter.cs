@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using DataShield.Codec.Reporting;
 using DataShield.Interfaces;
 

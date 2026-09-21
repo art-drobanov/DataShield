@@ -1,4 +1,4 @@
-namespace DataShield.Gui;
+﻿namespace DataShield.Gui;
 
 /// <summary>Язык интерфейса приложения.</summary>
 public enum UiLanguage

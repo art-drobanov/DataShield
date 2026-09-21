@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 using DataShield.Codec.Packets;
 using DataShield.Codec.Reporting;
@@ -28,11 +28,30 @@ public sealed class StreamEncoder : StreamCodec
     // Процент избыточности заголовков (min 3 копии)
     private readonly int _headerPercent;
 
+    // Сигнатурные пакеты SHA-512: копия сразу за каждым заголовком
+    private readonly bool _signaturePackets512;
+
+    // Секрет хеширования операции (null/пустая — без секрета)
+    private readonly string? _hashSecret;
+
     /// <summary>Текущий процент избыточности ECC.</summary>
     public int EccPercent => _eccPercent;
 
     /// <summary>Текущий процент избыточности заголовков.</summary>
     public int HeaderPercent => _headerPercent;
+
+    /// <summary>
+    /// Сигнатурные пакеты SHA-512 включены: рядом с каждой копией заголовка
+    /// в поток вставляется сигнатурный пакет SHA-512 содержимого.
+    /// </summary>
+    public bool SignaturePackets512 => _signaturePackets512;
+
+    /// <summary>
+    /// Секрет хеширования операции (контекстен, см. <see cref="SecretScopeGuard"/>):
+    /// защищает хеши «на проводе» (SHA-256 заголовка, SHA-512 сигнатур).
+    /// null/пустая строка — обычный режим без секрета.
+    /// </summary>
+    public string? HashSecret => _hashSecret;
 
     /// <summary>
     /// Создать кодер с заданным процентом избыточности.
@@ -45,11 +64,20 @@ public sealed class StreamEncoder : StreamCodec
     /// <see cref="VirtualIndexHasher.DefaultSectorLimit"/>). Файл с большим
     /// числом томов схемой VirtualIndex не кодируется (без даунгрейда).
     /// </param>
+    /// <param name="signaturePackets512">
+    /// Сигнатурные пакеты SHA-512: за каждой копией заголовка следует
+    /// сигнатурный пакет (SHA-512 содержимого ‖ Trunc11(SHA-512(S1))).
+    /// </param>
+    /// <param name="hashSecret">
+    /// Секрет хеширования на время операций (null/пустая — без секрета).
+    /// </param>
     public StreamEncoder(
         int eccPercent = 10,
         int headerPercent = 3,
         SectorScheme sectorScheme = SectorScheme.Classic,
-        int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit)
+        int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit,
+        bool signaturePackets512 = false,
+        string? hashSecret = null)
         : base(sectorScheme, virtualIndexSectorLimit)
     {
         if (eccPercent < 0)
@@ -59,6 +87,8 @@ public sealed class StreamEncoder : StreamCodec
 
         _eccPercent = eccPercent;
         _headerPercent = headerPercent;
+        _signaturePackets512 = signaturePackets512;
+        _hashSecret = hashSecret;
     }
 
     /// <summary>
@@ -108,6 +138,7 @@ public sealed class StreamEncoder : StreamCodec
         ReadOnlySpan<byte> content, string fileName,
         IProgress<CodecProgress>? progress, CancellationToken ct)
     {
+        using var _ = new SecretScopeGuard(_hashSecret);
         VerifySha256();
 
         var fileSize = (uint)content.Length;
@@ -127,9 +158,9 @@ public sealed class StreamEncoder : StreamCodec
 
         var lastPct = -1;
 
-        // ── SHA-256 содержимого ──────────────────────────────────────────────
+        // ── SHA-256 содержимого (режим «секрет» — Sha256Secure) ─────────────
         ProgressThrottle.Tick(progress, ref lastPct, 0, 100, CodecStrings.DataPreparation, ct);
-        var sha256 = Sha256Compact.HashData(content);
+        var sha256 = Sha256Secure.HashData(content);
 
         // ── Размерности ──────────────────────────────────────────────────────
         var dataCount = Math.Max(1,
@@ -182,6 +213,11 @@ public sealed class StreamEncoder : StreamCodec
         var headerHash = PacketHasher.ComputeHeaderHash(headerBytes);
         var headerPacket = BuildHeaderPacket(headerBytes, headerHash);
 
+        // ── Сигнатурный пакет SHA-512 (S1 ‖ Trunc11(SHA-512(S1))) ────────────
+        byte[]? signaturePacket = null;
+        if (_signaturePackets512)
+            signaturePacket = SignaturePacket.Build(content);
+
         // ── Секторы данных и ECC ─────────────────────────────────────────────
         var allPayloads = new byte[totalCount][];
         for (var i = 0; i < dataCount; i++) allPayloads[i] = dataPayloads[i];
@@ -200,7 +236,7 @@ public sealed class StreamEncoder : StreamCodec
 
         // ── Расположение пакетов для передачи ────────────────────────────────
         var headerCount = ComputeHeaderCount(totalCount, _headerPercent);
-        var packets = ArrangePackets(headerPacket, dataSectors, headerCount);
+        var packets = ArrangePackets(headerPacket, dataSectors, headerCount, signaturePacket);
 
         progress?.Report(CodecProgress.Create(100, CodecStrings.Done));
 
@@ -277,37 +313,55 @@ public sealed class StreamEncoder : StreamCodec
         ReadOnlySpan<byte> content, string fileName,
         IProgress<CodecProgress>? progress, CancellationToken ct)
     {
+        using var _ = new SecretScopeGuard(_hashSecret);
         var packets = Encode(content, fileName, progress, ct);
 
-        // Размерности и SHA-256 пересчитываются здесь, а не возвращаются из
+        // Размерности и хеши пересчитываются здесь, а не возвращаются из
         // Encode, чтобы ядро кодирования оставалось свободным от статистики
         var fileSize = (uint)content.Length;
-        var sha256 = Sha256Compact.HashData(content);
+        var sha256 = Sha256Secure.HashData(content);
         var dataCount = Math.Max(1,
             (int)((fileSize + (uint)PacketFormat.PayloadSize - 1) / PacketFormat.PayloadSize));
         var eccCount = ComputeEccCount(dataCount, _eccPercent);
 
-        // Копии заголовка = остаток потока после data- и ECC-томов
-        var headerCopies = packets.Count - dataCount - eccCount;
+        // Остаток потока после data- и ECC-томов — копии заголовка; при
+        // включённых сигнатурах за каждой копией следует ровно один
+        // сигнатурный пакет, поэтому остаток делится пополам
+        var extras = packets.Count - dataCount - eccCount;
+        var signatureCopies = _signaturePackets512 ? extras / 2 : 0;
+        var headerCopies = extras - signatureCopies;
+
+        // Значения «на проводе» (в режиме «секрет» защищены) и реальные
+        // (без секрета, из ОЗУ) — для отчёта и сводок
+        byte[]? sha512 = _signaturePackets512 ? Sha512Secure.HashData(content) : null;
+        var realSha256 = Sha256Compact.HashData(content);
+        byte[]? realSha512 = _signaturePackets512 ? Sha512Compact.HashData(content) : null;
 
         return (packets, new EncodeStats(
-            fileSize, sha256, dataCount, eccCount, packets.Count, headerCopies));
+            fileSize, sha256, dataCount, eccCount, packets.Count, headerCopies,
+            sha512, signatureCopies, realSha256, realSha512));
     }
 
     // ── Расположение пакетов в передаваемом потоке ──────────────────────────
 
     /// <summary>
     /// Расставить пакеты в выходном потоке: заголовок в начале и конце,
-    /// промежуточные копии — равномерно по интервалу.
+    /// промежуточные копии — равномерно по интервалу. Если задан
+    /// сигнатурный пакет SHA-512, за каждой копией заголовка (нечётный
+    /// вывод) немедленно следует сигнатурный пакет (чётный вывод) —
+    /// три копии явно закрывают схему begin-middle-end, далее чередование
+    /// в теле потока.
     /// </summary>
     private static List<byte[]> ArrangePackets(
-        byte[] headerPacket, byte[][] dataSectors, int headerCount)
+        byte[] headerPacket, byte[][] dataSectors, int headerCount,
+        byte[]? signaturePacket = null)
     {
         var totalCount = dataSectors.Length;
-        var packets = new List<byte[]>(totalCount + headerCount);
+        var packets = new List<byte[]>(totalCount + headerCount * 2);
 
-        // Первый пакет потока — заголовок
+        // Первый пакет потока — заголовок (+ сигнатура)
         packets.Add(headerPacket);
+        AddSignature(packets, signaturePacket);
 
         if (headerCount <= 2)
         {
@@ -318,24 +372,34 @@ public sealed class StreamEncoder : StreamCodec
         {
             // Равномерное распределение промежуточных заголовков
             var middleCount = headerCount - 2; // Без первого и последнего
+
             var interval = Math.Max(1, totalCount / (middleCount + 1));
 
             for (var i = 0; i < totalCount; i++)
             {
                 packets.Add(dataSectors[i]);
-                // Вставляем заголовок на равных интервалах
+                // Вставляем заголовок на равных интервалах (+ сигнатура)
                 if ((i + 1) % interval == 0 && middleCount > 0)
                 {
                     packets.Add(headerPacket);
+                    AddSignature(packets, signaturePacket);
                     middleCount--;
                 }
             }
         }
 
-        // Последний пакет потока — заголовок
+        // Последний пакет потока — заголовок (+ сигнатура)
         packets.Add(headerPacket);
+        AddSignature(packets, signaturePacket);
 
         return packets;
+    }
+
+    // Сигнатурный пакет следует сразу за заголовком, если режим включён.
+    private static void AddSignature(List<byte[]> packets, byte[]? signaturePacket)
+    {
+        if (signaturePacket is not null)
+            packets.Add(signaturePacket);
     }
 
     // ── Построение пакетов ──────────────────────────────────────────────────

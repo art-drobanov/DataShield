@@ -1,4 +1,4 @@
-namespace DataShield.Codec.StreamProcessor.Subsets;
+﻿namespace DataShield.Codec.StreamProcessor.Subsets;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Снимок состояния приёма одного тома для планировщика подмножеств

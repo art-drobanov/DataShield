@@ -1,4 +1,4 @@
-namespace DataShield.Codec.StreamFilter;
+﻿namespace DataShield.Codec.StreamFilter;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Диапазон байт

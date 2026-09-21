@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using DataShield.Codec.Reporting;
 using DataShield.Console;
 
@@ -43,6 +43,8 @@ internal sealed class EnStrings : IConsoleStrings
           -e, --ecc <0-1000>               ECC redundancy, % (default 10)
           -h, --header <0-50>              Header copies, % (default 3)
           -s, --scheme <classic|virtual>   Sector scheme (default classic)
+          --signatures                     SHA-512 signature packets (after each header)
+          --secret <string>                Hash secret: protects all on-wire hashes
           -q, --quiet                      Disable progress display
 
         decode options:
@@ -51,6 +53,9 @@ internal sealed class EnStrings : IConsoleStrings
           -a, --all                        Restore all files in the stream, not only the best one
           -n, --use-name                   Name output files by stream headers
           -s, --scheme <classic|virtual>   Sector reception scheme (default classic)
+          --sigmode <base|auto|force>      SHA-512 signatures: base — check disabled,
+                                           auto — by stream (default), force — always check
+          --secret <string>                Stream hash secret (the one used at encoding)
           -q, --quiet                      Disable progress display
 
         The decode input format is detected by extension: .txt — Base64, .bin — binary.
@@ -84,6 +89,9 @@ internal sealed class EnStrings : IConsoleStrings
 
     /// <inheritdoc/>
     public string BadSchemeValueFormat => "--scheme: unknown value '{0}' (available: classic, virtual).";
+
+    /// <inheritdoc/>
+    public string BadSignatureModeFormat => "--sigmode: unknown value '{0}' (available: base, auto, force).";
 
     /// <inheritdoc/>
     public string CanceledByUser => "Canceled by user.";
@@ -125,6 +133,12 @@ internal sealed class EnStrings : IConsoleStrings
     public string Sha256Label => "SHA-256:";
 
     /// <inheritdoc/>
+    public string Sha512Label => "SHA-512:";
+
+    /// <inheritdoc/>
+    public string SignaturesLabel => "Signatures:";
+
+    /// <inheritdoc/>
     public string VolumesLabel => "Volumes:";
 
     /// <inheritdoc/>
@@ -164,7 +178,7 @@ internal sealed class EnStrings : IConsoleStrings
     public string RestoredLineFormat => "Restored: {0} ({1:N0} B)";
 
     /// <inheritdoc/>
-    public string MapLineFormat => "Map: {0}";
+    public string ReportLineFormat => "Report: {0}";
 
     /// <inheritdoc/>
     public string Base64FormatName => "Base64 text";

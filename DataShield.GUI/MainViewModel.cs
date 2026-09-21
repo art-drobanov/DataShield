@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -39,6 +39,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _useSlotName = true;
     private bool _useVirtualIndexScheme;
     private OutputFormat _selectedFormat = OutputFormat.Base64;
+    private bool _signaturePackets512;
+    private SignatureMode _selectedSignatureMode = SignatureMode.Auto;
+    private string _hashSecret = "";
 
     // ── Свойства для привязок ───────────────────────────────────────────────
 
@@ -135,6 +138,37 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         get => _useVirtualIndexScheme;
         set => SetField(ref _useVirtualIndexScheme, value);
+    }
+
+    /// <summary>
+    /// Вставлять сигнатурные пакеты SHA-512 при кодировании: за каждой
+    /// копией заголовка следует сигнатурный пакет S1 ‖ Trunc11(SHA-512(S1)).
+    /// </summary>
+    public bool SignaturePackets512
+    {
+        get => _signaturePackets512;
+        set => SetField(ref _signaturePackets512, value);
+    }
+
+    /// <summary>
+    /// Режим приёма сигнатурных пакетов при декодировании: Base — только
+    /// подсчёт, Auto — проверка при наличии принятых сигнатур,
+    /// Force — проверка всегда.
+    /// </summary>
+    public SignatureMode SelectedSignatureMode
+    {
+        get => _selectedSignatureMode;
+        set => SetField(ref _selectedSignatureMode, value);
+    }
+
+    /// <summary>
+    /// Секрет режима хеширования: непустая строка становится байтовым
+    /// префиксом всех хешей «на проводе» (SHA-256 и SHA-512 сигнатур).
+    /// </summary>
+    public string HashSecret
+    {
+        get => _hashSecret;
+        set => SetField(ref _hashSecret, value);
     }
 
     /// <summary>Выполняется ли операция (блокирует повторный запуск).</summary>
@@ -301,10 +335,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             PhaseLabel = p.Phase;
         });
 
+        // Секрет передаётся кодеку (контекстен: действует только на время операции)
+        var hashSecret = string.IsNullOrWhiteSpace(HashSecret) ? null : HashSecret;
+
         using IDataShieldCodec codec = new DataShieldCodec(
             EccPercent,
             HeaderPercent,
-            UseVirtualIndexScheme ? SectorScheme.VirtualIndex : SectorScheme.Classic);
+            UseVirtualIndexScheme ? SectorScheme.VirtualIndex : SectorScheme.Classic,
+            signaturePackets512: SignaturePackets512,
+            hashSecret: hashSecret);
 
         var (packets, stats) = await Task.Run(() =>
         {
@@ -327,13 +366,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ResultLines.Clear();
         ResultLines.Add(Field(UiStrings.ROutputFormat, $"{SelectedFormat}"));
         ResultLines.Add(Field(UiStrings.RSourceSize, $"{stats.FileSize:N0} {UiStrings.BytesUnit}"));
-        ResultLines.Add(Field(UiStrings.RSha256, Hex(stats.Sha256)));
+
+        // Реальные сигнатуры (без секрета): значения «на проводе» непригодны
+        // для вывода при активном режиме хеширования «с секретом»
+        ResultLines.Add(Field(UiStrings.RSha256, Hex(stats.RealSha256 ?? stats.Sha256)));
+
+        if (stats.SignaturePackets512)
+            AddSha512Lines(stats.RealSha512 ?? stats.Sha512!);
+
         ResultLines.Add(Field(UiStrings.RDataVolumes, $"{stats.DataCount:N0}"));
         ResultLines.Add(Field(UiStrings.REccVolumes, $"{stats.EccCount:N0}"));
         ResultLines.Add(Field(UiStrings.RTotalPackets, $"{stats.TotalPackets:N0}"));
         ResultLines.Add(Field(UiStrings.RHeaderCopies, $"{stats.HeaderCopies:N0}"));
+
+        if (stats.SignaturePackets512)
+            ResultLines.Add(Field(UiStrings.RSignatures, $"{stats.SignatureCopies:N0}"));
+
         ResultLines.Add(Field(UiStrings.ROverhead, $"~ {overheadPct:F1}%"));
         ResultLines.Add(Field(UiStrings.ROutputFile, outputPath));
+
+        // Отчёт кодирования (без карты блоков) пишет кодек
+        var reportPath = CodecReport.BuildPath(outputPath);
+        ResultLines.Add(Field(UiStrings.RMapFile, reportPath));
+        await Task.Run(() =>
+            CodecReport.WriteEncoding(reportPath, stats, Path.GetFileName(InputPath)), ct);
 
         // Карта валидности: при кодировании все N+M томов «целы»
         var totalCount = stats.DataCount + stats.EccCount;
@@ -357,10 +413,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         var detectedFormat = OutputFormatConfig.DetectFormat(InputPath);
 
+        // Секрет передаётся кодеку (контекстен: действует только на время операции)
+        var hashSecret = string.IsNullOrWhiteSpace(HashSecret) ? null : HashSecret;
+
         using IDataShieldCodec codec = new DataShieldCodec(
             sectorScheme: UseVirtualIndexScheme
                 ? SectorScheme.VirtualIndex
-                : SectorScheme.Classic);
+                : SectorScheme.Classic,
+            signatureMode: SelectedSignatureMode,
+            hashSecret: hashSecret);
 
         var scanProgress = new Progress<CodecProgress>(p =>
         {
@@ -426,6 +487,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 string.Format(UiStrings.HeadersCopiesReceivedFormat, bestSlot.HeaderReceptionCount)));
             ResultLines.Add(Field(UiStrings.RDataVolumes, $"{bestSlot.DataVolumeCount:N0}"));
             ResultLines.Add(Field(UiStrings.REccVolumes, $"{bestSlot.EccCount:N0}"));
+            ResultLines.Add(Field(UiStrings.RSignatures, $"{codec.SignaturePacketCount:N0}"));
             ResultLines.Add(SectorsLine(bestSlot));
 
             return;
@@ -433,22 +495,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         await Task.Run(() => File.WriteAllBytes(outputPath, content), ct);
 
-        // Запись карты валидности в файл (MAP-отчёт формирует кодек)
-        var mapPath = SectorMapReport.BuildPath(outputPath);
-        await Task.Run(() => SectorMapReport.Write(mapPath, bestSlot), ct);
+        // Отчёт декодирования (сводка + карта валидности) пишет кодек;
+        // реальные сигнатуры пересчитываются по потоку в ОЗУ
+        var reportPath = CodecReport.BuildPath(outputPath);
+        await Task.Run(() =>
+            CodecReport.WriteDecoding(reportPath, bestSlot, content,
+                codec.SignatureCheckActive, codec.SignaturePacketCount,
+                hashSecretUsed: hashSecret is not null), ct);
+
+        var realSha256 = await Task.Run(() => Sha256Compact.HashData(content), ct);
 
         ResultLines.Clear();
         ResultLines.Add(Field(UiStrings.RInputFormat, $"{detectedFormat}"));
         ResultLines.Add(Field(UiStrings.RFileName, bestSlot.Header.FileName));
         ResultLines.Add(Field(UiStrings.RSize, $"{content.Length:N0} {UiStrings.BytesUnit}"));
-        ResultLines.Add(Field(UiStrings.RSha256, Hex(bestSlot.Header.Sha256)));
+        ResultLines.Add(Field(UiStrings.RSha256, Hex(realSha256)));
+
+        if (codec.SignatureCheckActive)
+            AddSha512Lines(Sha512Compact.HashData(content));
+
         ResultLines.Add(Field(UiStrings.RHeaders,
             string.Format(UiStrings.HeadersCopiesReceivedFormat, bestSlot.HeaderReceptionCount)));
         ResultLines.Add(Field(UiStrings.RDataVolumes, $"{bestSlot.DataVolumeCount:N0}"));
         ResultLines.Add(Field(UiStrings.REccVolumes, $"{bestSlot.EccCount:N0}"));
+        ResultLines.Add(Field(UiStrings.RSignatures, $"{codec.SignaturePacketCount:N0}"));
         ResultLines.Add(SectorsLine(bestSlot));
         ResultLines.Add(Field(UiStrings.ROutputFile, outputPath));
-        ResultLines.Add(Field(UiStrings.RMapFile, mapPath));
+        ResultLines.Add(Field(UiStrings.RMapFile, reportPath));
 
         SetStatus(string.Format(UiStrings.DecodeDoneFormat, $"{content.Length:N0}", outputPath));
     }
@@ -492,6 +565,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
     /// <summary>Строка результата «Метка : значение» с выравниванием меток.</summary>
     private static string Field(string label, string value) =>
         label.PadRight(ResultLabelWidth) + " : " + value;
+
+    /// <summary>
+    /// Строки результата для SHA-512: значение выводится двумя строками
+    /// по 64 hex-символа, продолжение выровнено под значением SHA-256.
+    /// </summary>
+    private void AddSha512Lines(byte[] sha512)
+    {
+        var hex = Hex(sha512);
+        ResultLines.Add(Field(UiStrings.RSha512, hex[..64]));
+        ResultLines.Add(new string(' ', ResultLabelWidth + 3) + hex[64..]);
+    }
 
     /// <summary>Строка «Секторы : X / Y (покрытие Z%)».</summary>
     private static string SectorsLine(ReceptionSlot slot) =>

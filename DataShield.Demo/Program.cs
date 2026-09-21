@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using DataShield.Codec;
@@ -9,11 +9,14 @@ using DataShield.TestsHarness;
 /// <summary>
 /// Консольный стенд непрерывной стабильности: в бесконечном цикле
 /// кодирует случайные файлы (одиночные и мультифайловые потоки, обе схемы
-/// секторов, случайные проценты ECC), вносит повреждения в бюджете и сверх
-/// бюджета ECC и проверяет декодирование. PASS — точное восстановление,
-/// WARN — корректный отказ при сознательном сверхповреждении, FAIL — сломанное
-/// ожидание (останавливает стенд). Таблица последних итераций и средние
-/// скорости рисуются на месте (при перенаправленном выводе — потоком).
+/// секторов, случайные проценты ECC, случайные сигнатурные пакеты SHA-512,
+/// секрет хеширования и режим проверки сигнатур), вносит повреждения в
+/// бюджете и сверх бюджета ECC и проверяет декодирование. PASS — точное
+/// восстановление, WARN — корректный отказ (сознательное сверхповреждение,
+/// чужой секрет хеширования, расширенная проверка SHA-512 без принятых
+/// сигнатур), FAIL — сломанное ожидание (останавливает стенд). Таблица
+/// последних итераций и средние скорости рисуются на месте (при
+/// перенаправленном выводе — потоком).
 ///
 /// Стенд работает только через единый контракт <see cref="IDataShieldCodec"/>:
 /// каждая операция выполняется случайно созданным экземпляром библиотечного
@@ -27,18 +30,24 @@ internal static class Program
     // Строк таблицы в кольцевом буфере.
     private const int HistorySize = 20;
 
+    // Опции сигнатур/секрета в итерациях, %.
+    private const int SignatureChancePercent = 40;  // сигнатурные пакеты SHA-512 при кодировании
+    private const int SecretChancePercent = 40;     // секрет хеширования (кодер и декодер)
+    private const int ForceNoSigChancePercent = 30; // sigmode force без сигнатур (ожидаемый отказ)
+    private const int SecretFailChancePercent = 10; // чужой секрет декодера (ожидаемый отказ)
+
     // Ширина таблицы результатов; вычисляется в DrawHeader.
     private static int _tableWidth;
 
     /// <summary>Шапка таблицы результатов (общая для отрисовки и вычисления ширины).</summary>
     private static readonly string HeaderLine = string.Format(
-        " {0,8} | {1,8} | {2,3} | {3,3} | {4,3} | {5,5} | {6,3} | {7,3} | {8,5}/{9,-5} | {10,5} | {11,6} | {12,6} | {13,6} | {14,7} | {15,7} | {16,4} ",
+        " {0,8} | {1,8} | {2,3} | {3,3} | {4,3} | {5,8} | {6,3} | {7,3} | {8,5}/{9,-5} | {10,5} | {11,6:X6} | {12,6} | {13,6} | {14,7:F2} | {15,7:F2} | {16,4} ",
         "N", "Size", "Fmt", "Sch", "Api", "Via", "Ecc", "Hdr", "Data", "Ecc", "Lost", "Dmg",
         "T.Pass", "T.Fail", "EncMBps", "DecMBps", "Stat");
 
     // Формат строки таблицы (общий для отрисовки и журнала).
     private const string RowFormat =
-        " {0,8} | {1,8} | {2,3} | {3,3} | {4,3} | {5,5} | {6,3} | {7,3} | {8,5}/{9,-5} | {10,5} | {11,6:X6} | {12,6} | {13,6} | {14,7:F2} | {15,7:F2} | {16,4} ";
+        " {0,8} | {1,8} | {2,3} | {3,3} | {4,3} | {5,8} | {6,3} | {7,3} | {8,5}/{9,-5} | {10,5} | {11,6:X6} | {12,6} | {13,6} | {14,7:F2} | {15,7:F2} | {16,4} ";
 
     // Реальная ширина таблицы: длина отформатированной строки-образца
     // (все поля фиксированной ширины).
@@ -61,7 +70,7 @@ internal static class Program
         public string Format { get; set; } = ""; // txt / bin / mlt
         public string Scheme { get; set; } = ""; // схема секторов: A / B / AB (смесь)
         public string Impl { get; set; } = "";   // реализации контракта: A / C / AC
-        public string Via { get; set; } = "";    // перегрузки: кодирование/декодирование (S/P/B/W/I/T × D/T/N/A/M)
+        public string Via { get; set; } = "";    // перегрузки: S/P/B/W/I/T × D/T/N/A/M + метки g/K/f/X/F (сигнатуры/секрет)
         public int EccPercent { get; set; }      // избыточность, % (средняя для multi)
         public int HeaderPercent { get; set; }   // избыточность заголовков, %
         public int DataCount { get; set; }       // data-тома
@@ -427,6 +436,7 @@ internal static class Program
         Info("API:", "IDataShieldCodec, random instance per operation:");
         Info("", "DataShieldCodec [A] / DataShieldConsole [C], IDisposable");
         Info("Via:", "encode S/P/B/W/I/T × decode D/T/N/A/M — random overload per operation");
+        Info("", "g = SHA-512 signatures, K = hash secret; decode: f = sigmode force, X = wrong secret, F = force refusal");
         Console.ForegroundColor = ConsoleColor.DarkGray;
 
         // Легенда маски повреждений: перенос по словам с выравниванием
@@ -479,7 +489,7 @@ internal static class Program
         Console.BackgroundColor = ConsoleColor.DarkYellow;
         Console.Write(" WARN ");
         Console.ResetColor();
-        Console.Write(" - deliberate over-damage: codec reports failure correctly\n");
+        Console.Write(" - deliberate over-damage / wrong secret / force w/o signatures: clean refusal\n");
 
         Console.Write("    ");
         Console.ForegroundColor = ConsoleColor.Black;
@@ -779,6 +789,58 @@ internal static class Program
     private static string AppendTag(string tags, char tag) =>
         tags.Contains(tag) ? tags : tags + tag;
 
+    /// <summary>
+    /// Случайный секрет хеширования: печатный ASCII длиной 1..24 (буквы,
+    /// цифры, знаки, иногда пробел и «=»). Без ведущего «-», чтобы значение
+    /// не выглядело опцией.
+    /// </summary>
+    private static string RollSecret(Random rng)
+    {
+        const string alphabet =
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !@#$%^*()_=+.,;?";
+        var length = 1 + rng.Next(24);
+        var chars = new char[length];
+        for (var i = 0; i < length; i++)
+            chars[i] = alphabet[rng.Next(alphabet.Length)];
+        return new string(chars);
+    }
+
+    /// <summary>Чужой секрет: случайная строка, гарантированно не равная данной.</summary>
+    private static string RollDistinctSecret(string secret, Random rng)
+    {
+        string wrong;
+        do
+        {
+            wrong = RollSecret(rng);
+        }
+        while (wrong == secret);
+        return wrong;
+    }
+
+    /// <summary>
+    /// Повреждения с секретом хеширования: хеши пакетов «на проводе»
+    /// защищены префиксом секрета, поэтому движок повреждений (распознавание
+    /// заголовков и секторов, подделка коллизий) считает хеши в том же
+    /// режиме — секрет устанавливается контекстно на время операции.
+    /// </summary>
+    private static DamageResult ApplyDamageWithSecret(
+        ScenarioPlan plan,
+        IReadOnlyList<(IReadOnlyList<byte[]> Packets, EncodeStats Stats)> encoded,
+        Random rng, string? secret)
+    {
+        Sha256Secure.HashSecret = secret;
+        Sha512Secure.HashSecret = secret;
+        try
+        {
+            return ScenarioEngine.ApplyDamage(plan, encoded, rng);
+        }
+        finally
+        {
+            Sha256Secure.HashSecret = null;
+            Sha512Secure.HashSecret = null;
+        }
+    }
+
     // ------------- Одна итерация: кодирование → повреждения → декодирование -------------
 
     /// <summary>Результат итерации плюс тайминги, объём и метки для ротации сида.</summary>
@@ -801,9 +863,12 @@ internal static class Program
     }
 
     /// <summary>
-    /// Одиночная итерация: кодирование случайной перегрузкой, повреждения
-    /// в бюджете или сверх бюджета, сканирование кусков и сборка; проверка
-    /// ожидания (точное восстановление или чистый отказ в стрессе).
+    /// Одиночная итерация: кодирование случайной перегрузкой (иногда с
+    /// сигнатурными пакетами SHA-512 и секретом хеширования), повреждения
+    /// в бюджете или сверх бюджета, сканирование кусков и сборка со случайным
+    /// режимом проверки сигнатур; проверка ожидания (точное восстановление
+    /// или чистый отказ в стрессе, при чужом секрете либо force без
+    /// подтверждённых сигнатур).
     /// </summary>
     private static IterationOutcome RunSingleFile(int n, Random rng, ScenarioPlan plan)
     {
@@ -812,9 +877,30 @@ internal static class Program
         var impl = "";
         char encVia;
 
+        // Сигнатуры/секрет: случайные опции итерации. Чужой секрет декодера —
+        // ожидаемый отказ (заголовки с чужим префиксом хешей не распознаются);
+        // sigmode force без сигнатур — ожидаемый отказ расширенной проверки
+        // SHA-512 (файл собран и подтверждён SHA-256, сигнатур нет)
+        var signatures = rng.Next(100) < SignatureChancePercent;
+        var secret = rng.Next(100) < SecretChancePercent ? RollSecret(rng) : null;
+        var wrongSecret = secret is not null && rng.Next(100) < SecretFailChancePercent
+            ? RollDistinctSecret(secret, rng)
+            : null;
+        SignatureMode sigmode;
+        if (wrongSecret is not null)
+            sigmode = SignatureMode.Auto;
+        else if (signatures)
+            sigmode = (SignatureMode)rng.Next(3); // base / auto / force — проверка пройдёт
+        else if (rng.Next(100) < ForceNoSigChancePercent)
+            sigmode = SignatureMode.Force;
+        else
+            sigmode = SignatureMode.Auto;
+        var forceMode = sigmode == SignatureMode.Force;
+
         // Кодирование (замеряемое): случайная реализация контракта и перегрузка
         var (encoder, encTag) = CodecVariants.CreateCodec(
-            file.EccPercent, file.HeaderPercent, file.Scheme, file.SectorLimit, rng);
+            file.EccPercent, file.HeaderPercent, file.Scheme, file.SectorLimit, rng,
+            signaturePackets512: signatures, hashSecret: secret);
         impl = AppendTag(impl, encTag);
 
         List<byte[]> packets;
@@ -833,43 +919,66 @@ internal static class Program
         // Повреждения: комбинированные в бюджете или сверх бюджета (план);
         // коллизии версий — адверсариальный случай, учитываемый проверкой
         // итогового стресса
-        var damage = ScenarioEngine.ApplyDamage(plan, [(packets, stats)], rng);
-        var stress = ScenarioEngine.IsStressOutcome(plan, damage);
+        var damage = ApplyDamageWithSecret(plan, [(packets, stats)], rng, secret);
 
         // Декодирование: случайная реализация контракта; схема приёмника
         // соответствует схеме файла: для B — гибридный приём (флаг
         // VirtualIndex, классический приём проверяется первым), для A —
         // обычный классический приём.
         var (decoder, decTag) = CodecVariants.CreateCodec(
-            file.EccPercent, file.HeaderPercent, file.Scheme, file.SectorLimit, rng);
+            file.EccPercent, file.HeaderPercent, file.Scheme, file.SectorLimit, rng,
+            signatureMode: sigmode, hashSecret: wrongSecret ?? secret);
         impl = AppendTag(impl, decTag);
 
-        byte[]? restored;
-        char decVia;
+        byte[]? restored = null;
+        var decVia = 'F'; // при force-отказе перегрузка неизвестна — маркер отказа
         double decSeconds;
+        var refused = false;
 
-        using (decoder)
+        var decSw = Stopwatch.StartNew();
+        try
         {
-            var sw = Stopwatch.StartNew();
-            (restored, decVia) = CodecVariants.DecodeVariants(decoder, damage, rng);
-            sw.Stop();
-            decSeconds = sw.Elapsed.TotalSeconds;
+            using (decoder)
+            {
+                (restored, decVia) = CodecVariants.DecodeVariants(decoder, damage, rng);
+            }
         }
+        catch (SignatureVerificationException) when (forceMode)
+        {
+            // force: файл собран и подтверждён SHA-256, но не подтверждён ни
+            // одной принятой сигнатурой SHA-512 — чистый отказ по определению
+            refused = true;
+        }
+        decSw.Stop();
+        decSeconds = decSw.Elapsed.TotalSeconds;
 
-        // Ожидание: обычный режим — точное восстановление;
-        // стресс — чистый отказ (null) или точное восстановление
-        var passed = ScenarioEngine.MeetsExpectation(plan, damage, restored, content);
+        // Ожидание: обычный режим — точное восстановление; стресс — чистый
+        // отказ (null) или точное восстановление; чужой секрет — чистый
+        // отказ; force — дополнительно чистый отказ неподтверждённых сигнатур
+        var passed = wrongSecret is not null
+            ? restored is null
+            : forceMode
+                ? restored is null || ScenarioEngine.MeetsExpectation(plan, damage, restored, content)
+                : ScenarioEngine.MeetsExpectation(plan, damage, restored, content);
+        var stress = ScenarioEngine.IsStressOutcome(plan, damage) ||
+                     wrongSecret is not null ||
+                     (forceMode && restored is null);
 
         string? hint = null;
-        if (!passed && !stress)
+        if (!passed && (!stress || wrongSecret is not null))
         {
             // Диагностический проход: слоты приёма для дампа (основная
-            // перегрузка могла не возвращать список результатов)
+            // перегрузка могла не возвращать список результатов); режим
+            // Base и секрет кодера — слоты видны, расширенная проверка
+            // не бросает
             using var diagCodec = new DataShieldCodec(
-                file.EccPercent, file.HeaderPercent, file.Scheme, file.SectorLimit);
+                file.EccPercent, file.HeaderPercent, file.Scheme, file.SectorLimit,
+                signatureMode: SignatureMode.Base, hashSecret: secret);
             DumpFailure(n, CodecVariants.DecodeChunks(diagCodec, damage), damage, stats, restored, content);
             if (restored is null)
                 hint = "restored null";
+            else if (wrongSecret is not null)
+                hint = "wrong secret restored data";
             else if (restored.Length != content.Length)
                 hint = $"length mismatch {restored.Length} vs {content.Length}";
             else
@@ -879,6 +988,10 @@ internal static class Program
             }
         }
 
+        var decTags = refused
+            ? "F"
+            : $"{decVia}{(forceMode ? "f" : "")}{(wrongSecret is not null ? "X" : "")}";
+
         return new IterationOutcome(
             new TestResult
             {
@@ -887,7 +1000,7 @@ internal static class Program
                 Format = plan.Format == OutputFormat.Base64 ? "txt" : "bin",
                 Scheme = file.Scheme == SectorScheme.VirtualIndex ? "B" : "A",
                 Impl = impl,
-                Via = $"{encVia}/{decVia}",
+                Via = $"{encVia}{(signatures ? "g" : "")}{(secret is not null ? "K" : "")}/{decTags}",
                 EccPercent = file.EccPercent,
                 HeaderPercent = file.HeaderPercent,
                 DataCount = stats.DataCount,
@@ -908,10 +1021,12 @@ internal static class Program
     /// <summary>
     /// Многофайловая итерация: 2–3 файла обеих схем в общем потоке —
     /// перемешанном повреждённом либо чистой последовательной склейке
-    /// FEC-потоков (план сценария); один декодер; проверка — каждый
-    /// различимый файл собран точно (неразличимые заголовки сливаются в
-    /// один слот — это ожидаемо). Все операции — через случайно созданные
-    /// экземпляры контракта.
+    /// FEC-потоков (план сценария); сигнатуры SHA-512 и секрет хеширования
+    /// общие на весь поток; один декодер со случайным режимом проверки
+    /// сигнатур; проверка — каждый различимый файл собран точно
+    /// (неразличимые заголовки сливаются в один слот — это ожидаемо), а при
+    /// чужом секрете либо force без подтверждённых сигнатур — чистый отказ.
+    /// Все операции — через случайно созданные экземпляры контракта.
     /// </summary>
     private static IterationOutcome RunMultiFile(int n, Random rng, ScenarioPlan plan)
     {
@@ -919,6 +1034,22 @@ internal static class Program
         var fileCount = files.Count;
         var encoded = new List<(IReadOnlyList<byte[]> Packets, EncodeStats Stats)>(fileCount);
         var impl = "";
+
+        // Сигнатуры/секрет общие на весь поток (каждый кодер и итоговый
+        // декодер). Чужой секрет декодера — ожидаемый отказ (заголовки с
+        // чужим префиксом хешей не распознаются); sigmode разыгрывается
+        // любой, в том числе force без сигнатур — ожидаемый чистый отказ
+        // расширенной проверки SHA-512
+        var signatures = rng.Next(100) < SignatureChancePercent;
+        var secret = rng.Next(100) < SecretChancePercent ? RollSecret(rng) : null;
+        var wrongSecret = secret is not null && rng.Next(100) < SecretFailChancePercent
+            ? RollDistinctSecret(secret, rng)
+            : null;
+        var sigmode = wrongSecret is not null
+            ? SignatureMode.Auto
+            : (SignatureMode)rng.Next(3); // base / auto / force
+        var forceMode = sigmode == SignatureMode.Force;
+        var refused = false;
 
         var sw = Stopwatch.StartNew();
         var eccSum = 0;
@@ -928,7 +1059,8 @@ internal static class Program
         {
             var file = files[f];
             var (encoder, encTag) = CodecVariants.CreateCodec(
-                file.EccPercent, file.HeaderPercent, file.Scheme, file.SectorLimit, rng);
+                file.EccPercent, file.HeaderPercent, file.Scheme, file.SectorLimit, rng,
+                signaturePackets512: signatures, hashSecret: secret);
             impl = AppendTag(impl, encTag);
 
             using (encoder)
@@ -952,21 +1084,32 @@ internal static class Program
         // есть файл B, декодер гибридный (флаг VirtualIndex читает схемы
         // A и B одновременно); поток из одних A принимает классический
         // приёмник.
-        var damage = ScenarioEngine.ApplyDamage(plan, encoded, rng);
+        var damage = ApplyDamageWithSecret(plan, encoded, rng, secret);
 
         var anyVirtual = files.Any(f => f.Scheme == SectorScheme.VirtualIndex);
         var (decoder, decTag) = CodecVariants.CreateCodec(
             1, 1,
             anyVirtual ? SectorScheme.VirtualIndex : SectorScheme.Classic,
             VirtualIndexHasher.DefaultSectorLimit,
-            rng);
+            rng,
+            signatureMode: sigmode,
+            hashSecret: wrongSecret ?? secret);
         impl = AppendTag(impl, decTag);
 
-        List<DecodeResult> results;
+        List<DecodeResult> results = [];
         sw.Restart();
-        using (decoder)
+        try
         {
-            results = CodecVariants.DecodeChunks(decoder, damage);
+            using (decoder)
+            {
+                results = CodecVariants.DecodeChunks(decoder, damage);
+            }
+        }
+        catch (SignatureVerificationException) when (forceMode)
+        {
+            // force: файлы собираются и подтверждаются SHA-256, но не
+            // подтверждаются сигнатурами SHA-512 — чистый отказ потока
+            refused = true;
         }
         sw.Stop();
         double decSeconds = sw.Elapsed.TotalSeconds;
@@ -982,7 +1125,9 @@ internal static class Program
         // обгонять верную версию по подтверждениям после дублирования
         // строк): для такого слота допустим чистый отказ сборки, как и для
         // одиночного файла с Collision-повреждением.
-        bool stress = ScenarioEngine.IsStressOutcome(plan, damage);
+        bool stress = ScenarioEngine.IsStressOutcome(plan, damage) ||
+                      wrongSecret is not null ||
+                      refused;
 
         var pending = new List<byte[]>();
         var seenHeaders = new HashSet<string>();
@@ -997,36 +1142,47 @@ internal static class Program
                 pending.Add(files[f].Content);
         }
 
-        bool passed = results.Count == pending.Count;
-        if (passed)
+        // Чужой секрет — чистый отказ (заголовков не видно); force-отказ —
+        // чистый отказ расширенной проверки; иначе — точная сборка каждого
+        // различимого файла
+        bool passed;
+        if (wrongSecret is not null)
+            passed = results.Count == 0;
+        else if (refused)
+            passed = true;
+        else
         {
-            var unverifiable = 0;
-            foreach (var result in results)
+            passed = results.Count == pending.Count;
+            if (passed)
             {
-                var restored = result.Content;
-                if (restored is null)
+                var unverifiable = 0;
+                foreach (var result in results)
                 {
-                    if (result.Slot.CollisionSectorCount == 0)
+                    var restored = result.Content;
+                    if (restored is null)
+                    {
+                        if (result.Slot.CollisionSectorCount == 0)
+                        {
+                            passed = false;
+                            break;
+                        }
+
+                        unverifiable++;
+                        continue;
+                    }
+
+                    var match = pending.FindIndex(c => c.AsSpan().SequenceEqual(restored));
+                    if (match < 0)
                     {
                         passed = false;
                         break;
                     }
-
-                    unverifiable++;
-                    continue;
+                    pending.RemoveAt(match);
                 }
 
-                var match = pending.FindIndex(c => c.AsSpan().SequenceEqual(restored));
-                if (match < 0)
-                {
+                if (passed && pending.Count != unverifiable)
                     passed = false;
-                    break;
-                }
-                pending.RemoveAt(match);
             }
-
-            if (passed && pending.Count != unverifiable)
-                passed = false;
         }
 
         if (!passed)
@@ -1046,6 +1202,10 @@ internal static class Program
         // Combo схем для класса сценария: 0 = только A, 1 = только B, 2 = смесь.
         var schemeCombo = schemeText.Length == 2 ? 2 : schemeText == "B" ? 1 : 0;
 
+        var decTags = refused
+            ? "F"
+            : $"A{(forceMode ? "f" : "")}{(wrongSecret is not null ? "X" : "")}";
+
         return new IterationOutcome(
             new TestResult
             {
@@ -1054,7 +1214,7 @@ internal static class Program
                 Format = "mlt",
                 Scheme = schemeText,
                 Impl = impl,
-                Via = $"{via}/A",
+                Via = $"{via}{(signatures ? "g" : "")}{(secret is not null ? "S" : "")}/{decTags}",
                 EccPercent = avgEcc,
                 HeaderPercent = avgHeader,
                 DataCount = dataCount,

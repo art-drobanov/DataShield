@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using DataShield.Codec.Reporting;
 using DataShield.Console;
 
@@ -43,6 +43,8 @@ internal sealed class RuStrings : IConsoleStrings
           -e, --ecc <0-1000>               ECC-избыточность, % (по умолчанию 10)
           -h, --header <0-50>              Копии заголовка, % (по умолчанию 3)
           -s, --scheme <classic|virtual>   Схема секторов (по умолчанию classic)
+          --signatures                     Сигнатурные пакеты SHA-512 (за каждым заголовком)
+          --secret <строка>                Хеш-секрет: защищает все хеши «на проводе»
           -q, --quiet                      Отключить индикацию прогресса
 
         Параметры decode:
@@ -51,6 +53,9 @@ internal sealed class RuStrings : IConsoleStrings
           -a, --all                        Восстановить все файлы потока, а не только лучший
           -n, --use-name                   Именовать выходные файлы по заголовкам потока
           -s, --scheme <classic|virtual>   Схема приёма секторов (по умолчанию classic)
+          --sigmode <base|auto|force>      Сигнатуры SHA-512: base — проверка отключена,
+                                           auto — по потоку (по умолчанию), force — всегда
+          --secret <строка>                Хеш-секрет потока (тот же, что при кодировании)
           -q, --quiet                      Отключить индикацию прогресса
 
         Формат входа при decode определяется по расширению: .txt — Base64, .bin — бинарный.
@@ -84,6 +89,9 @@ internal sealed class RuStrings : IConsoleStrings
 
     /// <inheritdoc/>
     public string BadSchemeValueFormat => "--scheme: неизвестное значение «{0}» (доступно: classic, virtual).";
+
+    /// <inheritdoc/>
+    public string BadSignatureModeFormat => "--sigmode: неизвестное значение «{0}» (доступно: base, auto, force).";
 
     /// <inheritdoc/>
     public string CanceledByUser => "Отменено пользователем.";
@@ -125,6 +133,12 @@ internal sealed class RuStrings : IConsoleStrings
     public string Sha256Label => "SHA-256:";
 
     /// <inheritdoc/>
+    public string Sha512Label => "SHA-512:";
+
+    /// <inheritdoc/>
+    public string SignaturesLabel => "Сигнатуры:";
+
+    /// <inheritdoc/>
     public string VolumesLabel => "Тома:";
 
     /// <inheritdoc/>
@@ -164,7 +178,7 @@ internal sealed class RuStrings : IConsoleStrings
     public string RestoredLineFormat => "Восстановлен: {0} ({1:N0} Б)";
 
     /// <inheritdoc/>
-    public string MapLineFormat => "Карта: {0}";
+    public string ReportLineFormat => "Отчет: {0}";
 
     /// <inheritdoc/>
     public string Base64FormatName => "Base64-текст";

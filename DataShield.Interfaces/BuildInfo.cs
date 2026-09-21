@@ -1,4 +1,4 @@
-namespace DataShield.Interfaces;
+﻿namespace DataShield.Interfaces;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Общие метаданные сборки продукта
@@ -11,5 +11,5 @@ namespace DataShield.Interfaces;
 public static class BuildInfo
 {
     /// <summary>Маркер этапа разработки, выводимый рядом с версией сборки.</summary>
-    public const string BuildLabel = "Alpha-XV";
+    public const string BuildLabel = "Alpha-XVI";
 }

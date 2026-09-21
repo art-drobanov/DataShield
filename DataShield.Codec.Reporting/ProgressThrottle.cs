@@ -1,4 +1,4 @@
-namespace DataShield.Codec.Reporting;
+﻿namespace DataShield.Codec.Reporting;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Троттлинг отчётов прогресса из горячих циклов кодека

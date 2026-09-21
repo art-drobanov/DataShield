@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using DataShield.Codec;
 using DataShield.Codec.Packets;
 using DataShield.Codec.Reporting;
@@ -109,8 +109,9 @@ public sealed class ConsoleApp(IConsoleStrings strings)
     /// <summary>
     /// Команда encode: один входной файл → поток в выбранном формате.
     /// Опции: --format text|bin, --ecc 0..100, --header 0..100,
-    /// --scheme classic|virtual, --output, --quiet. После кодирования
-    /// печатает сводку (SHA-256, тома, избыточность).
+    /// --scheme classic|virtual, --signatures, --secret, --output, --quiet.
+    /// После кодирования пишет отчёт (.report) и печатает сводку
+    /// (SHA-256/SHA-512, тома, избыточность).
     /// </summary>
     private int Encode(
         List<string> positional, Dictionary<string, string> options, CancellationToken ct)
@@ -127,22 +128,35 @@ public sealed class ConsoleApp(IConsoleStrings strings)
         var eccPercent = GetInt(options, "ecc", 10, 0, 1000);
         var headerPercent = GetInt(options, "header", StreamEncoder.DefaultHeaderPercent, 0, 50);
         var scheme = ParseScheme(GetString(options, "scheme", "classic"));
+        var signaturePackets = options.ContainsKey("signatures");
         var quiet = options.ContainsKey("quiet");
+        var hashSecret = GetString(options, "secret", "");
 
         var outputPath = GetString(options, "output", OutputFormatConfig.GetDefaultOutputPath(inputPath, format));
 
-        using IDataShieldCodec codec = new DataShieldConsole(quiet, eccPercent, headerPercent, scheme);
+        using IDataShieldCodec codec = new DataShieldConsole(
+            quiet, eccPercent, headerPercent, scheme,
+            signaturePackets512: signaturePackets,
+            hashSecret: hashSecret);
         var stats = DataShieldCodecFiles.EncodeFile(codec, inputPath, outputPath, format, ct: ct);
+
+        // Отчёт кодирования (без карты блоков); локализация — CodecStrings.Language
+        var reportPath = CodecReport.BuildPath(outputPath);
+        CodecReport.WriteEncoding(reportPath, stats, Path.GetFileName(inputPath));
 
         PrintBanner();
         var labelWidth = new[]
         {
-            strings.FileLabel, strings.SizeLabel, strings.Sha256Label, strings.VolumesLabel,
-            strings.PacketsLabel, strings.SchemeLabel, strings.OutputLabel,
+            strings.FileLabel, strings.SizeLabel, strings.Sha256Label, strings.Sha512Label,
+            strings.SignaturesLabel, strings.VolumesLabel, strings.PacketsLabel,
+            strings.SchemeLabel, strings.OutputLabel,
         }.Max(label => label.Length) + 1;
         Field(strings.FileLabel, inputPath, labelWidth);
         Field(strings.SizeLabel, string.Format(strings.Culture, strings.SizeFormat, stats.FileSize), labelWidth);
-        Field(strings.Sha256Label, Hex(stats.Sha256), labelWidth);
+        // Реальные сигнатуры (без секрета) — значения «на проводе» защищены
+        Field(strings.Sha256Label, Hex(stats.RealSha256 ?? stats.Sha256), labelWidth);
+        if (stats.SignaturePackets512)
+            WriteSha512Field(stats.RealSha512 ?? stats.Sha512!, labelWidth);
         // Избыточность ECC: доля ECC-томов от data-томов
         var eccRedundancyPct = stats.DataCount > 0
             ? stats.EccCount * 100.0 / stats.DataCount
@@ -154,6 +168,8 @@ public sealed class ConsoleApp(IConsoleStrings strings)
             ? stats.HeaderCopies * 100.0 / totalVolumes
             : 0.0;
 
+        if (stats.SignaturePackets512)
+            Field(strings.SignaturesLabel, $"{stats.SignatureCopies}", labelWidth);
         Field(strings.VolumesLabel,
             string.Format(strings.Culture, strings.VolumesFormat, eccRedundancyPct, stats.DataCount, stats.EccCount),
             labelWidth);
@@ -185,14 +201,18 @@ public sealed class ConsoleApp(IConsoleStrings strings)
                 string.Format(strings.Culture, strings.DecodeFileNotFoundFormat, inputPath));
 
         var scheme = ParseScheme(GetString(options, "scheme", "classic"));
+        var signatureMode = ParseSignatureMode(GetString(options, "sigmode", "auto"));
         var restoreAll = options.ContainsKey("all");
         var useSlotName = options.ContainsKey("use-name");
         var quiet = options.ContainsKey("quiet");
         var explicitOutput = GetString(options, "output", "");
+        var hashSecret = GetString(options, "secret", "");
 
         var format = OutputFormatConfig.DetectFormat(inputPath);
 
-        using IDataShieldCodec codec = new DataShieldConsole(quiet, sectorScheme: scheme);
+        using IDataShieldCodec codec = new DataShieldConsole(
+            quiet, sectorScheme: scheme, signatureMode: signatureMode,
+            hashSecret: hashSecret);
         var results = DataShieldCodecFiles.DecodeFile(codec, inputPath, ct: ct);
 
         if (results.Count == 0)
@@ -250,19 +270,32 @@ public sealed class ConsoleApp(IConsoleStrings strings)
 
             File.WriteAllBytes(outputPath, content);
 
-            // MAP-отчёт формирует кодек, локализация — CodecStrings.Language
-            var mapPath = SectorMapReport.BuildPath(outputPath);
-            SectorMapReport.Write(mapPath, slot);
+            // Отчёт декодирования формирует кодек (.report.txt); сигнатуры в нём —
+            // реальные, пересчитанные по потоку в ОЗУ
+            var reportPath = CodecReport.BuildPath(outputPath);
+            CodecReport.WriteDecoding(
+                reportPath, slot, content,
+                codec.SignatureCheckActive, codec.SignaturePacketCount,
+                hashSecretUsed: hashSecret.Length > 0);
 
-            System.Console.WriteLine("    " + strings.Sha256Label.PadRight(subWidth) + Hex(slot.Header.Sha256));
+            // Реальные сигнатуры (без секрета) — из собранного содержимого
+            System.Console.WriteLine("    " + strings.Sha256Label.PadRight(subWidth) +
+                Hex(Sha256Compact.HashData(content)));
+            if (codec.SignatureCheckActive)
+                WriteSha512Field(Sha512Compact.HashData(content), subWidth, indent: "    ");
             System.Console.WriteLine("    " + string.Format(
                 strings.Culture, strings.RestoredLineFormat, outputPath, content.Length));
 
-            // Метка карты выравнивается под SHA-256/строку восстановления
-            var mapPrefix = strings.MapLineFormat[..strings.MapLineFormat.IndexOf('{')].TrimEnd();
-            System.Console.WriteLine("    " + mapPrefix.PadRight(subWidth) + mapPath);
+            // Метка отчёта выравнивается под SHA-256/строку восстановления
+            var reportPrefix = strings.ReportLineFormat[..strings.ReportLineFormat.IndexOf('{')].TrimEnd();
+            System.Console.WriteLine("    " + reportPrefix.PadRight(subWidth) + reportPath);
             restored++;
         }
+
+        // Контрольная сумма принятого потока (sha256sum) — рядом
+        // с восстановленным файлом: «поток».sha256
+        if (restored > 0)
+            CodecReport.WriteSha256Sidecar(inputPath);
 
         System.Console.WriteLine();
         System.Console.WriteLine(restored > 0
@@ -405,13 +438,17 @@ public sealed class ConsoleApp(IConsoleStrings strings)
             "q" or "quiet" => "quiet",
             "a" or "all" => "all",
             "n" or "use-name" or "usename" => "use-name",
+            "sig" or "signatures" => "signatures",
+            "sigmode" or "signature-mode" => "sigmode",
+            "secret" => "secret",
             _ => null,
         };
     }
 
     /// <summary>Опции, требующие значения (остальные — булевы флаги).</summary>
     private static bool OptionNeedsValue(string key) =>
-        key is "output" or "format" or "ecc" or "header" or "scheme";
+        key is "output" or "format" or "ecc" or "header" or "scheme"
+            or "sigmode" or "secret";
 
     /// <summary>Значение строковой опции или значение по умолчанию, если не задана/пуста.</summary>
     private static string GetString(
@@ -458,6 +495,27 @@ public sealed class ConsoleApp(IConsoleStrings strings)
         _ => throw new CliException(
             string.Format(strings.Culture, strings.BadSchemeValueFormat, value)),
     };
+
+    /// <summary>Разбор значения --sigmode (base/auto/force).</summary>
+    private SignatureMode ParseSignatureMode(string value) => value.ToLowerInvariant() switch
+    {
+        "base" => SignatureMode.Base,
+        "auto" => SignatureMode.Auto,
+        "force" => SignatureMode.Force,
+        _ => throw new CliException(
+            string.Format(strings.Culture, strings.BadSignatureModeFormat, value)),
+    };
+
+    /// <summary>
+    /// SHA-512 в две строки по 64 hex-символа: продолжение выровнено под
+    /// началом значения первой строки.
+    /// </summary>
+    private void WriteSha512Field(byte[] sha512, int width, string indent = "")
+    {
+        var hex = Hex(sha512);
+        System.Console.WriteLine(indent + strings.Sha512Label.PadRight(width) + hex[..64]);
+        System.Console.WriteLine(indent + new string(' ', width) + hex[64..]);
+    }
 
     /// <summary>Локализованное имя формата вывода для сводки.</summary>
     private string FormatName(OutputFormat format) =>

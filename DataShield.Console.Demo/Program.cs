@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using DataShield.Codec;
@@ -19,11 +19,13 @@ using DataShield.TestsHarness;
 /// аргументов, локализованные сообщения об ошибках, побитовые roundtrip'ы
 /// encode → decode и декодирование повреждённых потоков (одиночные и
 /// многофайловые, обе схемы секторов, случайные проценты ECC/заголовков,
-/// обе локали, длинные и короткие опции).
+/// обе локали, длинные и короткие опции, случайные флаги сигнатур и секрета
+/// хеширования --signatures/--secret/--sigmode).
 ///
 /// PASS — ожидание выполнено (roundtrip побитово точен, справка/шапка на месте),
 /// WARN — корректный отказ по замыслу (ошибки использования, поток без
-/// заголовков), FAIL — сломанное ожидание (останавливает стенд). Таблица
+/// заголовков, чужой секрет, force без сигнатур), FAIL — сломанное
+/// ожидание (останавливает стенд). Таблица
 /// последних итераций и средние времена процессов рисуются на месте
 /// (при перенапределённом выводе — потоком). Сид ПСЧ ротируется по интервалу
 /// либо по числу итераций (см. <see cref="SeedRotator"/>).
@@ -41,9 +43,20 @@ internal static class Program
     private const int DamageChancePercent = 20; // повреждённый поток через CLI
     private const int ErrChancePercent = 15;    // ошибки использования (ожидаемый отказ)
     private const int NoHeadersChancePercent = 10; // поток без заголовков (ожидаемый отказ)
+    private const int SecretFailChancePercent = 10; // чужой секрет хеширования (ожидаемый отказ)
     private const int EmptyChancePercent = 3;   // пустой файл внутри roundtrip
     private const int VirtualIndexChancePercent = 12; // схема virtual (с откатом на classic)
     private const int QuietChancePercent = 25;  // флаг --quiet
+
+    // Опции сигнатур/секрета в roundtrip-сценариях, %.
+    private const int SignatureChancePercent = 40;  // --signatures при кодировании
+    private const int SecretChancePercent = 40;     // --secret при кодировании и декодировании
+    private const int ForceNoSigChancePercent = 30; // --sigmode force без сигнатур (ожидаемый отказ)
+
+    // Подстрока сообщения SignatureVerificationException: текст исключения
+    // не локализуется, обе консоли печатают его в stderr как есть.
+    private const string SignatureFailMarker =
+        "не подтверждён ни одной принятой сигнатурой SHA-512";
 
     // Строк таблицы в кольцевом буфере.
     private const int HistorySize = 20;
@@ -107,7 +120,7 @@ internal static class Program
         public int N { get; set; }               // номер итерации
         public int SizeBytes { get; set; }       // размер входа (сумма для multi)
         public string Lang { get; set; } = "";   // локаль дочерних процессов: E / R / ER
-        public string Scenario { get; set; } = ""; // rt / mlt / dmg / hlp / err / nhc
+        public string Scenario { get; set; } = ""; // rt / mlt / dmg / hlp / err / nhc / sec
         public string Format { get; set; } = ""; // txt / bin / -
         public int EccPercent { get; set; }      // избыточность, % (средняя для multi)
         public int HeaderPercent { get; set; }   // избыточность заголовков, %
@@ -421,8 +434,8 @@ internal static class Program
     // ── Диспетчеризация сценария итерации ───────────────────────────────────
 
     /// <summary>
-    /// Одна итерация: разыгрывание сценария (rt / mlt / dmg / hlp / err / nhc)
-    /// и вызов соответствующего обработчика. Сценарии err / nhc — стрессовые:
+    /// Одна итерация: разыгрывание сценария (rt / mlt / dmg / hlp / err / nhc / sec)
+    /// и вызов соответствующего обработчика. Сценарии err / nhc / sec — стрессовые:
     /// корректный исход — чистый отказ с ожидаемым кодом возврата и текстом.
     /// </summary>
     private static IterationOutcome RunIteration(int n, Random rng)
@@ -443,6 +456,9 @@ internal static class Program
 
         if (roll < HelpChancePercent + MultiChancePercent + DamageChancePercent + ErrChancePercent + NoHeadersChancePercent)
             return ScenarioNoHeaders(n, rng);
+
+        if (roll < HelpChancePercent + MultiChancePercent + DamageChancePercent + ErrChancePercent + NoHeadersChancePercent + SecretFailChancePercent)
+            return ScenarioWrongSecret(n, rng);
 
         return ScenarioRoundtrip(n, rng);
     }
@@ -511,6 +527,20 @@ internal static class Program
         var ext = format == "text" ? ".txt" : ".bin";
         var scheme = RollScheme(size, eccPercent, rng);
         var quiet = rng.Next(100) < QuietChancePercent;
+        var signatures = rng.Next(100) < SignatureChancePercent;
+        var secret = rng.Next(100) < SecretChancePercent ? RollSecret(rng) : null;
+
+        // sigmode декодирования: с сигнатурами — любой (проверка пройдёт);
+        // без сигнатур force — ожидаемый отказ расширенной проверки SHA-512
+        var forceRefusal = false;
+        string? sigmode = null;
+        if (signatures)
+            sigmode = rng.Next(3) switch { 0 => "base", 1 => "auto", _ => "force" };
+        else if (rng.Next(100) < ForceNoSigChancePercent)
+        {
+            sigmode = "force";
+            forceRefusal = true;
+        }
 
         var inputPath = Path.Combine(dir, $"rt-{n:D6}.dat");
         File.WriteAllBytes(inputPath, content);
@@ -520,7 +550,7 @@ internal static class Program
 
         // ── encode: код 0, шапка, SHA-256 входа в сводке, файл создан ──────
         var encArgs = BuildEncodeArgs(inputPath, fecPath, format, eccPercent,
-            headerPercent, scheme, quiet, rng);
+            headerPercent, scheme, quiet, signatures, secret, rng);
         var enc = RunConsole(encLang.Dll, encArgs);
         var shaHex = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
 
@@ -561,6 +591,7 @@ internal static class Program
 
             if (useAll) decVia += "a";
             if (decQuiet) decVia += "q";
+            if (sigmode == "force") decVia += "f";
 
             var decArgs = new List<string>
             {
@@ -572,6 +603,13 @@ internal static class Program
             if (useAll) decArgs.Add(Option(rng, "--all", "-a"));
             if (useName) decArgs.Add(Option(rng, "--use-name", "-n"));
             if (decQuiet) decArgs.Add(Option(rng, "--quiet", "-q"));
+            if (secret is not null)
+                AddSecretOption(decArgs, secret, rng);
+            if (sigmode is not null)
+            {
+                decArgs.Add(Option(rng, "--sigmode", "--signature-mode"));
+                decArgs.Add(sigmode);
+            }
 
             var dec = RunConsole(decLang.Dll, decArgs);
             decMs = dec.Ms;
@@ -580,9 +618,16 @@ internal static class Program
             var contentEqual = restored is not null &&
                                restored.AsSpan().SequenceEqual(content);
 
-            okDecode = dec.Code == 0 &&
-                       HasBanner(dec.StdOut) &&
-                       contentEqual;
+            // force без сигнатур: чистый отказ с текстом исключения проверки
+            // SHA-512 в stderr, без шапки и без выходного файла
+            okDecode = forceRefusal
+                ? dec.Code == 1 &&
+                  dec.StdErr.Contains(SignatureFailMarker) &&
+                  !HasBanner(dec.StdOut) &&
+                  restored is null
+                : dec.Code == 0 &&
+                  HasBanner(dec.StdOut) &&
+                  contentEqual;
         }
 
         var passed = okEncode && okDecode;
@@ -597,7 +642,11 @@ internal static class Program
 
             if (hint is null)
             {
-                hint = okDecode
+                hint = forceRefusal
+                    ? okDecode
+                        ? null
+                        : "decode force w/o signatures: exit=1, verification error on stderr, no output file"
+                    : okDecode
                     ? null
                     : restored is null
                         ? "decode: exit=0/banner ok, restored file missing"
@@ -617,10 +666,12 @@ internal static class Program
             Format = format == "text" ? "txt" : "bin",
             EccPercent = eccPercent,
             HeaderPercent = headerPercent,
-            Via = $"e{(quiet ? "q" : "")}{(scheme == "virtual" ? "v" : "")}/{decVia}",
+            Via = $"e{(quiet ? "q" : "")}{(scheme == "virtual" ? "v" : "")}" +
+                  $"{(signatures ? "g" : "")}{(secret is not null ? "S" : "")}/{decVia}",
             EncMs = enc.Ms,
             DecMs = decMs,
             Passed = passed,
+            Stress = forceRefusal,
             FailureHint = hint
         });
     }
@@ -640,6 +691,15 @@ internal static class Program
         var fileCount = rng.Next(2) == 0 ? 2 : 3;
         var format = rng.Next(2) == 0 ? "text" : "bin";
         var ext = format == "text" ? ".txt" : ".bin";
+
+        // Секрет общий на весь поток (каждый encode и итоговый decode);
+        // sigmode — только успешные комбинации: с сигнатурами любой, без
+        // сигнатур force отказал бы по определению
+        var signatures = rng.Next(100) < SignatureChancePercent;
+        var secret = rng.Next(100) < SecretChancePercent ? RollSecret(rng) : null;
+        var sigmode = signatures
+            ? rng.Next(3) switch { 0 => "base", 1 => "auto", _ => "force" }
+            : rng.Next(3) switch { 0 => null, 1 => "base", _ => "auto" };
 
         var files = new List<(byte[] Content, string Name)>();
         var encMsSum = 0.0;
@@ -673,7 +733,7 @@ internal static class Program
 
                 var enc = RunConsole(encLang.Dll, BuildEncodeArgs(
                     inputPath, fecPath, format, eccPercent, headerPercent,
-                    scheme, quiet: false, rng));
+                    scheme, quiet: false, signatures, secret, rng));
 
                 var ok = enc.Code == 0 && File.Exists(fecPath);
                 if (!ok)
@@ -718,6 +778,13 @@ internal static class Program
         };
         if (anyVirtual)
             decArgs.AddRange(["--scheme", "virtual"]);
+        if (secret is not null)
+            AddSecretOption(decArgs, secret, rng);
+        if (sigmode is not null)
+        {
+            decArgs.Add(Option(rng, "--sigmode", "--signature-mode"));
+            decArgs.Add(sigmode);
+        }
         var dec = RunConsole(decLang.Dll, decArgs);
 
         var okDecode = dec.Code == 0 && HasBanner(dec.StdOut);
@@ -761,7 +828,8 @@ internal static class Program
             Format = format == "text" ? "txt" : "bin",
             EccPercent = eccSum / fileCount,
             HeaderPercent = 3,
-            Via = $"{via}/dan{(anyVirtual ? "v" : "")}",
+            Via = $"{via}{(signatures ? "g" : "")}{(secret is not null ? "S" : "")}" +
+                  $"/dan{(anyVirtual ? "v" : "")}{(sigmode == "force" ? "f" : "")}",
             EncMs = encMsSum,
             DecMs = dec.Ms,
             Passed = passed,
@@ -1008,16 +1076,119 @@ internal static class Program
         });
     }
 
+    // ── Сценарий: чужой секрет хеширования (ожидаемый отказ) ─────────────────
+
+    /// <summary>
+    /// Чужой секрет: файл кодируется с --secret (иногда вместе с
+    /// --signatures), декодируется с другим секретом. Хеши «на проводе»
+    /// защищены секретом, поэтому приёмник не распознаёт заголовки.
+    /// Ожидание: код 1, локализованное сообщение об отсутствии заголовков
+    /// в stderr, без шапки и без восстановленного файла.
+    /// </summary>
+    private static IterationOutcome ScenarioWrongSecret(int n, Random rng)
+    {
+        var dir = PrepareWorkDir(n);
+
+        var size = NextSize(rng);
+        var content = new byte[size];
+        rng.NextBytes(content);
+
+        var secret = RollSecret(rng);
+        string wrongSecret;
+        do
+        {
+            wrongSecret = RollSecret(rng);
+        }
+        while (wrongSecret == secret);
+
+        var signatures = rng.Next(2) == 0;
+        var format = rng.Next(2) == 0 ? "text" : "bin";
+        var ext = format == "text" ? ".txt" : ".bin";
+        var eccPercent = RollEcc(rng, dataCount: Math.Max(1, (size + 63) / 64));
+        var headerPercent = rng.Next(51);
+        var scheme = RollScheme(size, eccPercent, rng);
+
+        // ── encode с секретом: код 0 и поток создан ─────────────────────────
+        var inputPath = Path.Combine(dir, $"sec-{n:D6}.dat");
+        File.WriteAllBytes(inputPath, content);
+        var fecPath = Path.Combine(dir, $"sec-{n:D6}.DataShield{ext}");
+        var encLang = PickLanguage(rng);
+
+        var enc = RunConsole(encLang.Dll, BuildEncodeArgs(
+            inputPath, fecPath, format, eccPercent, headerPercent, scheme,
+            quiet: false, signatures, secret, rng));
+
+        var okEncode = enc.Code == 0 && File.Exists(fecPath);
+        if (!okEncode)
+            return new IterationOutcome(new TestResult
+            {
+                N = n,
+                SizeBytes = size,
+                Lang = encLang.Tag,
+                Scenario = "sec",
+                Format = format == "text" ? "txt" : "bin",
+                EccPercent = eccPercent,
+                HeaderPercent = headerPercent,
+                Via = "encode",
+                EncMs = enc.Ms,
+                Passed = false,
+                FailureHint = Describe(
+                    ("encode with --secret: exit=0, output exists", okEncode, enc))
+            });
+
+        // ── decode с чужим секретом: заголовки не распознаются — отказ ──────
+        var (dll, langTag, ru) = PickLanguage(rng);
+        var noHeaders = ru ? "Заголовки DataShield" : "No DataShield headers";
+
+        var outDir = Path.Combine(dir, "out");
+        Directory.CreateDirectory(outDir);
+        var expectedPath = Path.Combine(outDir, "restored.dat");
+
+        var decArgs = new List<string>
+        {
+            "decode", fecPath, "--output", expectedPath,
+            "--scheme", scheme,
+            "--secret", wrongSecret
+        };
+        var dec = RunConsole(dll, decArgs);
+
+        var passed = dec.Code == 1 &&
+                     dec.StdErr.Contains(noHeaders) &&
+                     !HasBanner(dec.StdOut) &&
+                     !File.Exists(expectedPath);
+
+        return new IterationOutcome(new TestResult
+        {
+            N = n,
+            SizeBytes = size,
+            Lang = encLang.Tag == langTag ? encLang.Tag : encLang.Tag + langTag,
+            Scenario = "sec",
+            Format = format == "text" ? "txt" : "bin",
+            EccPercent = eccPercent,
+            HeaderPercent = headerPercent,
+            Via = $"e{(signatures ? "g" : "")}S/dX",
+            EncMs = enc.Ms,
+            DecMs = dec.Ms,
+            Passed = passed,
+            Stress = true,
+            FailureHint = passed ? null : Describe(
+                ("decode wrong secret: exit=1, no-headers on stderr, no banner, no output file",
+                 passed, dec))
+        });
+    }
+
     // ── Сборка аргументов encode ─────────────────────────────────────────────
 
     /// <summary>
     /// Аргументы encode со случайными длинными/короткими формами опций:
     /// покрывает -o/--output, -f/--format, -e/--ecc, -h/--header,
-    /// -s/--scheme, -q/--quiet и форму --key=value.
+    /// -s/--scheme, -q/--quiet, --sig/--signatures и --secret (парой
+    /// «ключ значение» либо формой «--key=value»).
     /// </summary>
     private static List<string> BuildEncodeArgs(
         string inputPath, string outputPath, string format, int eccPercent,
-        int headerPercent, string scheme, bool quiet, Random rng)
+        int headerPercent, string scheme, bool quiet,
+        bool signatures, string? secret, Random rng)
     {
         var args = new List<string>
         {
@@ -1045,6 +1216,12 @@ internal static class Program
         args.Add($"{Option(rng, "--scheme", "-s")}");
         args.Add(scheme);
 
+        if (signatures)
+            args.Add(Option(rng, "--signatures", "--sig"));
+
+        if (secret is not null)
+            AddSecretOption(args, secret, rng);
+
         if (quiet)
             args.Add(Option(rng, "--quiet", "-q"));
 
@@ -1054,6 +1231,24 @@ internal static class Program
     /// <summary>Случайная форма опции: длинная либо короткая.</summary>
     private static string Option(Random rng, string Long, string Short) =>
         rng.Next(2) == 0 ? Long : Short;
+
+    /// <summary>
+    /// Добавить --secret случайной формой: парой «ключ значение» либо
+    /// «--secret=значение» (значение с «=» внутри корректно разбирается —
+    /// разрез идёт по первому «=»).
+    /// </summary>
+    private static void AddSecretOption(List<string> args, string secret, Random rng)
+    {
+        if (rng.Next(2) == 0)
+        {
+            args.Add("--secret");
+            args.Add(secret);
+        }
+        else
+        {
+            args.Add($"--secret={secret}");
+        }
+    }
 
     // ── Запуск дочернего процесса консоли ────────────────────────────────────
 
@@ -1244,6 +1439,23 @@ internal static class Program
         eccPercent <= 0 || dataCount <= 0
             ? 0
             : Math.Max(1, (int)(((long)dataCount * eccPercent + 50) / 100));
+
+    /// <summary>
+    /// Случайный секрет хеширования CLI: печатный ASCII длиной 1..24 (буквы,
+    /// цифры, знаки, иногда пробел и «=» — проверяет и парную передачу
+    /// «--secret значение», и форму «--secret=значение»). Без ведущего
+    /// «-», чтобы значение не выглядело опцией при парной передаче.
+    /// </summary>
+    private static string RollSecret(Random rng)
+    {
+        const string alphabet =
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !@#$%^*()_=+.,;?";
+        var length = 1 + rng.Next(24);
+        var chars = new char[length];
+        for (var i = 0; i < length; i++)
+            chars[i] = alphabet[rng.Next(alphabet.Length)];
+        return new string(chars);
+    }
 
     // ── Рабочий каталог ──────────────────────────────────────────────────────
 
@@ -1452,9 +1664,11 @@ internal static class Program
         Console.WriteLine(" Target:  child processes DataShield.Console.EN / DataShield.Console.RU");
         Console.WriteLine(" Scn:     rt = encode→decode roundtrip, mlt = multi-file stream,");
         Console.WriteLine("          dmg = damaged stream (in-process damage → CLI decode),");
-        Console.WriteLine("          hlp = help/no-args, err = usage errors (expected), nhc = no headers");
+        Console.WriteLine("          hlp = help/no-args, err = usage errors (expected), nhc = no headers,");
+        Console.WriteLine("          sec = wrong hash secret (expected refusal)");
         Console.WriteLine(" Lng:     E = EN console, R = RU console (random per invocation)");
-        Console.WriteLine(" Via:     e/d + q(uiet) v(irtual) a(ll) n(ame); exit codes: 0 ok, 2 usage, 1 error");
+        Console.WriteLine(" Via:     e/d + q(uiet) v(irtual) a(ll) n(ame) g(signatures) S(ecret)");
+        Console.WriteLine("          f(sigmode=force) X(wrong secret); exit codes: 0 ok, 2 usage, 1 error");
         Console.ResetColor();
     }
 

@@ -1,4 +1,4 @@
-namespace DataShield.Codec.StreamProcessor.Versions;
+﻿namespace DataShield.Codec.StreamProcessor.Versions;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Внутренний накопитель одной версии payload сектора

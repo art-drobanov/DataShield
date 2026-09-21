@@ -1,227 +1,506 @@
-# File Assembly and Collision Resolution — An Engineering Walkthrough
+# DataShield Alpha-XVI — Assembly Guide
 
-An engineering walkthrough of file assembly and collision resolution: no formalism for its own sake — shorter notation, more "why it is built this way" and "how it behaves on a real stream". For context (packet format, the H5/D3 hashes, accumulation) see `AlgorithmGuide.en.md`.
+Deep-dive reference for the receiver-side assembly engine: reception slots, sector versions, collision search, subset planning, arbitration and tuning.
 
-## 1. What We Are Actually Assembling
+| | |
+|---|---|
+| Project | DataShield Alpha-XVI |
+| Document | `docs/AssemblyGuide.en.md` (English); Russian mirror: `docs/AssemblyGuide.ru.md` |
+| Audience | Engineers implementing, reviewing or porting the decoder; advanced operators tuning recovery limits for hostile channels |
+| Scope | The `ReceptionSlot` model, version counting and snapshots, choice points, exhaustive and rotation searches, the volume-subset planner, the final verification gate, options and their calibration, cost model, worked examples |
+| Out of scope | Wire format and hashing fundamentals ([AlgorithmGuide](AlgorithmGuide.en.md)), text filtering and scanning ([DecoderGuide](DecoderGuide.en.md)), encoding ([EncoderGuide](EncoderGuide.en.md)), CLI and GUI usage ([UserGuide](UserGuide.en.md)), project layout ([DeveloperGuide](DeveloperGuide.en.md)) |
 
-After scanning, the decoder has:
+Reference implementation: `DataShield.Codec.StreamProcessor` (`ReceptionSlot.cs`, `Versions/`, `Subsets/`, `StreamProcessor.cs`) with arithmetic isolated in `SectorCombinationMath.cs`.
 
-- the file header: `N` data volumes, `M` ECC volumes, the file size, the SHA-256 of the whole file (`H3`), and `H5` — the seed of the sector hash;
-- the received 64-byte payloads filed by sector number. One number may hold several **different** payloads — the versions; each carries a counter of how many times it arrived.
+## 1. Conventions used in this document
 
-Assembly means: pick one payload per number, concatenate the first `N` volumes, trim to the file size, and compute the SHA-256. Match with `H3` — the file is ready. No match — take another combination.
+- `N` — data volume count, `M` — ECC volume count, `T = N + M` — total volumes of the file. "Volume index" and "sector number" are the same thing (see the [AlgorithmGuide](AlgorithmGuide.en.md) glossary).
+- `E` — the number of **erased data volumes** in one RS attempt: volumes missing from the stream plus volumes deliberately excluded by a mask.
+- A **version** is one candidate 64-byte payload stored for one sector number; a **collision slot** is a sector number with two or more distinct versions.
+- An **attempt** is one full assembly trial: build a buffer, trim it, hash it, compare. Every attempt is arbitrated by the same final gate (§13).
+- `H1..H5`, `D1..D3`, `S1..S2` are packet fields as defined in [AlgorithmGuide §5](AlgorithmGuide.en.md); `H5` is the 24-byte header hash that seeds all sector checks.
+- Sizes: `B` = bytes; a payload is always 64 B.
+- `2⁻ⁿ` is the probability that a random value passes an n-bit check.
+- References of the form `ReceptionSlot.cs` point at the reference implementation; method and property names are given exactly as in code.
 
-The key property: there is a single, final check, and it does not depend on how the packets arrived. So the outcome is always either a file bit-for-bit equal to the original, or an honest refusal (`null`). The state of "almost assembled, ship it anyway" does not exist, period.
+## 2. Where assembly sits
 
-## 2. Where Two Versions of One Sector Come From
+Decoding is a pipeline (full picture in [AlgorithmGuide §11](AlgorithmGuide.en.md)): a text filter extracts Base64 material from arbitrary surrounding text, a scanner finds intact 75-byte packets, and the `StreamProcessor` classifies each verified packet and accumulates it into **reception slots** — one slot per distinct header observed in the stream.
 
-- **Ordinary repeats are not a collision.** The same payload came again → the version's counter grew, nothing to search.
-- **A random hash collision.** The sector check is 72 bits of SHA-256; it does not happen in practice, but it is theoretically possible.
-- **A forgery.** H5 travels in the stream in the clear, so anyone who intercepted the stream can generate "valid" sectors with arbitrary content. The whole machinery exists for exactly this case.
+Assembly is the terminal operation of a slot:
 
-A forgery cannot pass the final check — that would need a SHA-256 preimage. The worst it can do: an assembly refusal or search time burned. The defense has three layers: counters (repeats strengthen the truth), a search over equally-plausible candidates, and the final hash.
-
-## 3. Where It All Lives
-
-A file slot is a dictionary "sector number → version list". A version is a payload plus a counter. Two rules that always hold:
-
-1. **The list is sorted by counter, descending.** The first element is the most confirmed; it is the default pick.
-2. **Equal counters are never swapped with each other.** Inside an equally-probable group the order is stable; only the rotation knows how to change it (section 11), and only within the group.
-
-An implementation detail worth knowing: a choice point holds a **live reference** to the slot's version list, not a copy. Rotation moves the slot's real lists — that is cheaper, and anyone wanting a snapshot calls `GetSectorVersions` and gets payload copies.
-
-## 4. Receiving a Sector Copy (`AddSector`)
-
-What happens for every received 75-byte sector packet:
-
-1. Input checks: the number is within `0..N+M-1`, the payload is exactly 64 bytes. The hash has already proven authenticity — these checks merely guard the API against bad calls.
-2. A new number — create the list, put the version in with counter 1.
-3. Otherwise search linearly for a byte-equal payload:
-   - found — counter `+1` (capped at `int.MaxValue`, so no overflow) and **bubbling up**: the version rises while a strictly less confirmed one sits above it. It never climbs past equals — rule 2 of section 3.
-   - not found — a new version goes to the **end** of the list (every existing version has a counter ≥ 1, so the sort holds).
-
-Why a linear search instead of a payload dictionary: in 99.9% of cases the list holds one version, and a single 64-byte compare is cheaper than maintaining a hash table per sector. Memory is saved too.
-
-A side effect of bubbling — the list "leader" is always the most confirmed version. The whole "preferred selection" logic below rests on it.
-
-## 5. The Assembly Plan
-
-```
-TryAssemble
-  1. selected ← versions[0] of every number (the most confirmed)
-  2. points   ← numbers where several versions share the top counter
-  3. no such numbers?
-       yes → a single attempt: direct assembly → RS      // sections 6–7
-       no ↓
-  4. C ← the product of the equally-probable counts (clamped at long.Max)
-  5. attempt #0 (the current selection) timed, t₀
-  6. exhaustive estimate = t₀ · C
-   7. C ≤ 100,000 and the estimate ≤ 30 s?
-        yes → exhaustive search (section 10)
-        no  → rotation (section 11)
-   8. still ⊥ and ECC exists → volume subset search (section 12)
+```csharp
+public byte[]? TryAssemble(
+    RsCodecAdapter? rs,
+    IProgress<CodecProgress>? progress,
+    CancellationToken ct,
+    IReadOnlyList<byte[]>? acceptedSignatures = null)
 ```
 
-Both strategies run the **same** attempt on every step (section 6, then 7) and differ only in how they prepare the next version set. Cancellation and the time budget are checked between attempts. Stage 3 finishes off what they cannot handle — no collisions, with a budget of its own (section 12).
+- `rs` — the Reed–Solomon adapter used for erasure recovery; may be `null` (then only direct assembly is possible).
+- `progress` — a receiver of `CodecProgress` on a global 0..100 scale.
+- `ct` — cancellation token, checked at stage entries and between attempts.
+- `acceptedSignatures` — the unique `S1` values (64-byte SHA-512 signatures) collected from the stream. Not `null` ⇒ the extended check is active: after the base SHA-256 gate, the assembled content must be confirmed by at least one signature (§13). `null` ⇒ the check is off (`SignatureMode.Base`, or `Auto` with no signature packet received).
 
-## 6. A Single Attempt: Direct Assembly
+Return contract:
 
-Boring and fast: if all `N` data volumes are present in the selection — concatenate `N·64` bytes, trim to the file size, hash, compare. One attempt costs a concatenation plus one SHA-256. The direct path covers the case of no losses, or losses covered by repeats.
+| Outcome | Meaning |
+|---|---|
+| non-null `byte[]` | The file was reconstructed and passed **Exact(SHA-256)** — and, when active, **Any(SHA-512)**. |
+| `null` | The limits were exhausted or the data is unrecoverable. |
+| `SignatureVerificationException` | Some attempt produced content that matches the header's SHA-256 **exactly**, but no collected signature confirms it — an integrity alarm, not a search failure (§13.3). |
 
-## 7. A Single Attempt: the RS Patch
+## 3. The reception slot: identity and counters
 
-Direct failed and ECC is configured:
+A `ReceptionSlot` is created by the `StreamProcessor` when a header packet with unseen content arrives:
 
-1. Build the "which volumes are in" map over the whole `N+M` line.
-2. Fewer than `N` volumes in place — nothing to recover from, fail.
-3. Call the Reed–Solomon decoder: it returns `N` data volumes — the intact ones as is, the lost ones recovered from ECC. The recovery condition is simple: lost data ≤ available ECC.
-4. Concatenate the result and check with the final hash.
-
-Two things that are easy to miss:
-
-- **ECC volumes are sectors too and can collide as well.** A forged ECC corrupts the recovery, the final hash mismatches — so the search must click through ECC-number versions too. It does: the selection is built over the whole `N+M` line.
-- RS runs in **every** search attempt. The search only varies the contested sectors; the holes are re-covered by ECC each time.
-
-## 8. Which Versions Take Part in the Search at All
-
-A branch point is a number where two or more payloads share the top counter. The search walks **only** these equally-probable heads. Versions with smaller counters are tried by neither exhaustive search nor rotation — as far as this assembly call is concerned, they do not exist.
-
-If the truth ends up in the minority (the forgery got duplicated more), the current assembly refuses. That is a deliberate trade: the chance of a hash-valid forgery is tiny, while a code path for "but what if the minority is right" would cost an exponent. The remedy is systemic: keep receiving — repeats will pull the truth up to a tie, and the next assembly call will see a choice point. Or the sector is not needed at all — RS will cover it.
-
-## 9. How Many Combinations and Which Search to Pick
-
-The combination count is the product of the head sizes. It is computed in `long`; if the product threatens to overflow, `long.MaxValue` comes back (shown as "> long.Max" in reports). The clamp exists so the limit comparison never blows up on arithmetic.
-
-Exhaustive search is allowed when both hold:
-
-1. no more than 100,000 combinations (a hard limit);
-2. the time estimate fits into 30 seconds.
-
-The estimate is not from thin air: the zero attempt is timed with a stopwatch, its duration multiplied by the combination count. An attempt includes SHA-256 and possibly RS — the price depends on the file size, which is why we measure the fact rather than trust a formula. Either condition fails — we rotate.
-
-## 10. Exhaustive Search: the Odometer
-
-Combinations are encoded as an index array with moduli — a "drum counter", like the odometer on old meters: the right drum turns first; at its limit it resets to zero and pushes the left one. All drums exhausted — the combinations are over.
-
-```
-attempt #0 has already been run by the caller
-for i = 1 .. C−1:
-    check cancellation and the budget (30 s)
-    click the odometer one notch
-    substitute the choice-point heads into the selection
-    run the attempt (sections 6–7); success — return the file
-fail
+```csharp
+public ReceptionSlot(
+    byte[] headerBytes,        // serialized 51-byte header content
+    HeaderContent header,      // parsed view of the same bytes
+    byte[] headerHash,         // H5: 24 bytes
+    SectorVersionSearchOptions searchOptions)
 ```
 
-The substitution touches only the local selection; the slot's version order is untouched. The guarantee is simple: if the correct combination lies within the equally-probable heads and the budget holds — the exhaustive search finds it.
+State carried by the slot:
 
-## 11. Rotation: the Heuristic for Heavy Cases
+| Member | Meaning |
+|---|---|
+| `Header` / `HeaderHash` | Parsed header and its `H5`; `H5` seeds every sector check for this file. |
+| `HeaderReceptionCount` | How many copies of this header were accepted; saturates at `int.MaxValue`. |
+| `HeaderMatches(ReadOnlySpan<byte>)` | Byte-wise comparison of a candidate packet's first 51 bytes against the stored header. Equal bytes ⇒ same file; the packet's trailing 24 bytes are the re-derivable `H5`. |
+| `_sectors` | `SortedDictionary<int, List<SectorVariant>>` — sector number → ordered version list (§4). |
+| `VirtualIndexCursor` | Expected next sector index under the VirtualIndex scheme (§5). |
+| `_signatureRejected` | Sticky flag set by the final gate; drives the exception of §13.3. |
 
-When there are too many combinations, walking everything is not an option. An observation from attack practice: a forgery is duplicated into all attacked sectors **identically**, i.e. the rank displacement of the truth is the same everywhere. Rotation checks exactly such "synchronous" shifts.
+Derived observables:
 
-Mechanics: after every failed attempt, in every contested sector the first equally-probable variant moves to the end of the equally-probable head. One step — one shift everywhere.
+| Property | Meaning |
+|---|---|
+| `DataVolumeCount` / `EccCount` / `TotalVolumeCount` | `N`, `M`, `T` from the header. |
+| `ReceivedSectorCount` | How many distinct sector numbers have at least one version. |
+| `ReceivedSectorCopyCount` | Total accepted sector copies — the sum of all version confirmation counters (`long`). |
+| `CollisionSectorCount` | How many sector numbers have more than one distinct version. |
+| `Coverage` | `ReceivedSectorCount × 100 / T`, a percentage. |
 
-The analogy is several cyclic lists of different lengths turning in sync. The picture repeats after the LCM of the lengths; at step `k` the chosen combination is "`k` modulo the length" in every list — a diagonal. From this everything follows:
+Duplicate header copies never create a second slot: `StreamProcessor.AcceptHeader` byte-compares the 51-byte content against every existing slot; a match only increments `HeaderReceptionCount`. Two different files in one stream therefore yield two slots, and each sector packet is offered to both — it sticks only to the slot whose `H5` verifies it (72-bit binding for Classic, §5).
 
-- **Pairwise-coprime lengths** → the LCM equals the product → rotation visits every combination, just in a different order than the odometer. Equivalent to exhaustive search.
-- **Common divisors present** → some combinations are unreachable. Example: three heads of 2 variants each — C = 8, but the LCM is 2; rotation checks only the two "pure" combinations and not a single mixed one. That is the price of speed.
-- A **systematic forgery** (the same shift in all attacked sectors) always lies on a diagonal — caught in one of the first attempts.
+## 4. Sector versions and confirmation counting
 
-The state count is clamped at 100,000; the budget and cancellation are checked at every step. Rotation moves the slot's real lists, but that is safe: a permutation inside an equally-probable head means nothing to future assemblies — any starting permutation is equally valid.
+### 4.1 The version object
 
-## 12. Silent Corruption and the Volume Subset Search
+`SectorVariant` (internal) is the smallest unit of evidence:
 
-Both searches from sections 10–11 assume the damage is **visible**: a collision exists, so there is something to iterate. But what if a volume is formally honest — the number is intact, the 72-bit sector hash matches — while the payload is corrupted (a random corruption slipped past the check, or a forgery was crafted together with its hash)? One version, no contest, RS with the full map trusts the corrupted volume, and the file hash never matches — with zero leads.
+| Field | Meaning |
+|---|---|
+| `Payload` | 64 bytes — one candidate content of the sector. |
+| `ConfirmationCount` | How many accepted copies carried exactly these bytes; starts at 1 on first sight, saturates at `int.MaxValue`. |
 
-Stage 3 flips the problem: if there is nothing to vary among versions, vary the map. Suspicious volumes are marked erased — as if they never arrived — and RS recovers them from the rest. Exclude exactly the bad one, and the truth gets recovered and confirmed by the final hash.
+The list for each sector number is kept **sorted by descending `ConfirmationCount`** at all times. The head of the list — the most confirmed version — is the decoder's default belief about that sector.
 
-The order of attempts (the `SubsetMaskPlanner` — pure functions, deterministic, easy to test):
+### 4.2 `AddSector`: the acceptance algorithm
 
-1. **Base** — all collision slots at once: instead of clicking through their versions one by one, erase the sectors and recover them from ECC. If that does not fit the ECC budget — the plan is empty and the stage honestly gives up.
-2. **Level 1** — exclude each present uncontested volume one at a time, starting with the most suspicious: fewer confirmations — earlier; ties — in a pseudo-random order seeded from H5 (the packet arrival order does not affect the outcome, and a repeated call reproduces the same plan).
-3. **Levels 2–3** — pairs and triples from the 64 most suspicious volumes (a shortlist, configurable).
+```csharp
+public bool AddSector(int sectorNum, byte[] payload)
+```
 
-Why a separate cap on E — the number of erased data volumes (32 by default): the price of an attempt is the Gaussian inversion ~E²·N. With E ≤ 32 an attempt costs milliseconds even on the largest field (T = 65,535); with E ≥ 128 it already costs seconds. That is why the erased-volume count is limited separately from the attempt count (100,000) and the budget (30 s); whichever fires first wins.
+1. Range check: `sectorNum` must be within `0..T−1` and `payload` exactly 64 B; otherwise `false` (defensive; verified packets normally satisfy both).
+2. Scan the version list for a byte-identical `Payload`.
+3. On a match, increment that version's counter (with saturation), then **promote** it: bubble it upward past versions with strictly smaller counters. The promotion stops at a version with an equal counter — equal-counter neighbours are never swapped. This keeps the sort stable and preserves whatever order equal versions happen to be in (important for the rotation search, §12).
+4. On no match, append a **new version** with counter 1 at the end of the list. Since every existing version has counter ≥ 1, the descending-sort invariant survives the append without re-sorting.
 
-When it helps: damaged media and "hash-consistent" forgeries without collisions — one, two, three corrupted volumes within the ECC budget. When it does not: massive damage that does not fit the ECC — an honest refusal.
+Cost: one pass over the versions of that sector (64-byte compare each) plus a bounded shift. For realistic collision counts (a handful of versions) this is effectively constant time.
 
-## 13. The Final Check and Cleanup (`TrimAndVerify`)
+Example — sector 7 receives payloads in the order `P1, P2, P1, P1, P2`:
 
-The `N·64` buffer is trimmed to the file size (the last volume was encoded with zero padding), hashed, compared with `H3`. A match — the file goes out. No match — the buffers are **wiped with zeros** and a refusal is returned. The wipe is not paranoia: a failed attempt may contain a forgery, and there is no reason to let it linger in the heap.
+| After copy | Version list (counter) |
+|---|---|
+| `P1` | P1 (1) |
+| `P2` | P1 (1), P2 (1) |
+| `P1` | P1 (2), P2 (1) |
+| `P1` | P1 (3), P2 (1) |
+| `P2` | P1 (3), P2 (2) |
 
-The bottom rule: assembly never hands out an unchecked result. A refusal is a refusal, not "roughly it".
+### 4.3 Snapshots
 
-## 14. What Is Visible from Outside
+`GetSectorVersions(int sectorNum)` returns a defensive snapshot: an array of `SectorVersionInfo` records (`ReadOnlyMemory<byte> Payload`, `int ConfirmationCount`) in the current preference order. Snapshots are the public observation API — callers cannot mutate live slot state through them. The internal `ChoicePoint` (§9) is the counterpart that *does* hold a live list reference, on purpose: the rotation search reorders that list.
 
-| Member                      | What it shows                                         |
-| --------------------------- | ----------------------------------------------------- |
-| `HeaderReceptionCount`      | how many header copies were caught                    |
-| `ReceivedSectorCount`       | how many numbers are covered by at least one version  |
-| `ReceivedSectorCopyCount`   | how many sector copies in total (sum of counters)     |
-| `CollisionSectorCount`      | how many numbers have competing versions              |
-| `Coverage`                  | the percentage of covered numbers of `N+M`            |
-| `FormatValidityMap`         | a string map: `█` received, `▓` collision, `░` hole   |
-| `BuildCollisionMap`         | number → how many versions                            |
-| `GetSectorVersions(n)`      | a snapshot of the sector's versions in preference order |
+## 5. How packets reach the slot (recap)
 
-Progress is throttled to whole percents and never shows 100 until the file is actually assembled. Inside the search, progress walks combinations ("exhaustive search: k / C"), not bytes.
+Classification happens in `StreamProcessor`; details belong to the [DecoderGuide](DecoderGuide.en.md). One verified 75-byte packet is offered to the slot machinery as exactly one of:
 
-## 15. Limits and Settings
+| Packet kind | Autonomous check | Effect |
+|---|---|---|
+| Header | `H5 = Trunc24(SHA-256(H1..H4))` over the 51-byte content | Existing slot: `HeaderReceptionCount++`. New content: new slot. |
+| Signature | `S2 = Trunc11(SHA-512(S1))` over the first 64 bytes | Copy counter always; unique `S1` stored when the mode is `Auto`/`Force`. |
+| Sector, Classic | `D3 = Trunc9(SHA-256(H5 ‖ D1 ‖ D2))` under *that slot's* `H5` | `AddSector(D1, payload)`. |
+| Sector, VirtualIndex | 11-byte tag `Trunc11(SHA-256(H5 ‖ payload ‖ idx))`, index recovered by the receiver | `AddSector(idx, payload)`; cursor advance on success. |
 
-| Setting                       | Default   | What it caps                                     |
-| ----------------------------- | --------- | ------------------------------------------------ |
-| `MaxExhaustiveCombinations`   | 100,000   | the ceiling of combinations for exhaustive search |
-| `MaxHeuristicAttempts`        | 100,000   | the ceiling of rotation states (including zero)   |
-| `TimeBudget`                  | 30 s      | a soft budget; checked between attempts           |
+Two reception details matter for assembly:
 
-Stage 3 (section 12) lives in the `SubsetSearch` group:
+- **Hybrid Classic-first.** `AcceptSectorForSlot` tries the Classic interpretation first, VirtualIndex second. A Classic-encoded stream is therefore still readable by a decoder configured for VirtualIndex.
+- **The VirtualIndex cursor.** `VirtualIndexCursor` is the expected next index. `AdvanceVirtualIndexCursor(acceptedIndex)` sets it cyclically to `(acceptedIndex + 1) % T`. For a sequential stream the tag verification starts at the cursor and succeeds immediately — O(1) per packet; for a shuffled stream the scan falls back to a full index sweep. The cursor is a performance hint only; it never rejects a packet that verifies at another index.
 
-| `SubsetSearch` setting          | Default   | What it caps                                     |
-| ------------------------------- | --------- | ------------------------------------------------ |
-| `MaxAttempts`                   | 100,000   | the stage's attempt ceiling                      |
-| `TimeBudget`                    | 30 s      | the stage's soft budget                          |
-| `MaxErasedDataVolumes`          | 32        | erased data volumes per attempt (the cap on E)   |
-| `ShortlistSize`                 | 64        | the shortlist for exclusion pairs and triples    |
-| `MaxExtraExclusionLevel`        | 3         | the maximum size of extra exclusions             |
+A packet binds to at most the slots whose `H5` verify it, which is what keeps fragments of two files from mixing silently.
 
-Overflows never throw during counting: combinations are clamped at `long.MaxValue`, the LCM at the attempt limit, and the per-level binomial coefficients at `long.MaxValue` too.
+## 6. Observability: maps and counters
 
-## 16. Post-Mortems
+The slot exposes three map builders used by reports, logs and tests:
 
-### 16.1. Clean reception
-A 100-byte file without ECC: two sectors, each received once. No contest → a single attempt, direct assembly, the hash matches. Done.
+| Method | Result |
+|---|---|
+| `BuildValidityMap()` | `bool[T]`: `true` where at least one version exists. |
+| `FormatValidityMap()` | One character per volume: `█` present, single version; `▓` present, collision; `░` missing. Empty file field yields the placeholder string `(пусто)`. |
+| `BuildCollisionMap()` | Dictionary: sector number → number of distinct versions, collision slots only. |
+| `BuildCollisionFlags()` | `bool[T]` with `true` at collision positions, or `null` when there are no collisions. |
 
-### 16.2. One contested sector, two variants
-Sector 0: variants `A` and `B`, three confirmations each. C = 2 → exhaustive: attempt #0 takes `A`, attempt #1 takes `B`. The truth shows up by the second attempt at the latest.
+Example, `T = 11`, sector 4 missing and sectors 2, 8 in collision:
 
-### 16.3. Two contested sectors: 3 × 2
-C = 6, LCM = 6 — coprime. Exhaustive and rotation walk the **same** set of six attempts, just in a different order (the odometer by rows, rotation by diagonals). Both are complete.
+```text
+index : 0 1 2 3 4 5 6 7 8 9 10
+map   : █ █ ▓ █ ░ █ █ █ ▓ █ █
+```
 
-### 16.4. Three contested sectors: 2 × 2 × 2
-C = 8, but suppose the time did not fit → rotation: LCM = 2, only `A+X+P` and `B+Y+Q` are checked. The six mixed combinations are skipped; if the truth is there — an honest refusal. The price of speed: a full pass would cost four times more.
+## 7. The assembly pipeline at a glance
 
-### 16.5. A forgery won the confirmations
-Sector 5: truth `A` (twice), forgery `B` (five times). The list head is a lone `B`, no contest, the selection always takes `B`, the hash mismatches, refusal. No search can help — `A` is outside the search field (section 8). What to do: keep receiving; repeats will pull `A` up to a tie, and the next assembly call will start branching.
+`TryAssemble` runs a fixed sequence of stages. Every attempt inside every stage goes through the same arbitration (§13); the first attempt that passes it wins.
 
-### 16.6. A silently corrupted volume
-`N = 64`, `M = 8`. Volume 7 is corrupted yet passed the sector check; one version. Stages 1–2: no contest, the single attempt hands RS the full map — RS trusts volume 7, the hash mismatches. Stage 3: no collisions, the base is empty; level 1 excludes volumes one by one — on the mask `{7}` RS recovers the truth and the hash matches. On the order of N cheap attempts, each a single inversion at E = 1.
+| Stage | Runs when | What it tries |
+|---|---|---|
+| 0. Preferred selection | always | Take the head version of every sector. |
+| 1. Single attempt | always, first | Direct assembly of the selection; on failure, RS recovery over the full validity map. |
+| 2. Version search | stage 1 failed **and** choice points exist (§9) | Other combinations of the tied head versions: exhaustive enumeration (§11) or heuristic rotation (§12), chosen by the decision rule of §10. |
+| 3. Volume subset search | stages 1–2 failed, `rs` present, `M ≥ 1` | Deliberately exclude suspicious volumes, let RS restore them (§14). |
 
-## 17. What Is Guaranteed and What Is Not
+Termination outcomes are those of §2. On success the slot reports progress 100 ("assembly finished"). Progress during searches is throttled to whole percentages and never reaches 100 prematurely (§15).
 
-Guaranteed:
+## 8. Stage 1 — the preferred selection and the single attempt
 
-1. A file was returned — its SHA-256 equals `H3`, i.e. it is the original bit-for-bit (within the strength of SHA-256).
-2. All data volumes received unambiguously — success on the first attempt.
-3. Combinations ≤ 100,000 and the time fits — the correct set within the equally-probable heads will be found.
-4. Coprime heads — rotation visits everything, equivalent to exhaustive search.
-5. There are no false results: either a proven file, or `null`.
+Two pure builders prepare the attempt:
 
-Not guaranteed (heuristics):
+- `BuildPreferredSelection()` — `byte[T][]`, element `i` being the head version payload of sector `i` (or `null` if absent).
+- `BuildChoicePoints()` — the branch points for stage 2 (§9).
 
-6. With common divisors, rotation sees only the LCM diagonals.
-7. Minority versions are not checked at all in this call.
-8. Fitting into 30 seconds is an empirical estimate from the zero attempt's timing.
-9. A single silent corruption outside collisions is caught by stage-3 level 1 — as long as the ECC budget and the limits hold.
-10. Pairs and triples of silent corruptions — only within the shortlist and the exclusion level.
+`TryAssembleSelected(selected, rs, ...)` is one attempt:
 
-Numbers to remember: the sector check is 72 bits, the header check 192 bits, the arbiter is SHA-256; exhaustive search up to 100,000 combinations, rotation up to 100,000 states, subset search up to 100,000 masks with the cap on E = 32, budgets of 30 s each. All configurable.
+1. **Direct assembly** (`TryAssembleDirect`): requires all `N` data volumes present; concatenates the payloads into an `N·64` buffer; hands it to the final gate (§13).
+2. **RS recovery** (`TryAssembleWithEcc`, only if direct failed and `rs` is set): builds the validity `map[T]` and the `received[T]` payload array from the selection; requires `present ≥ N`; calls `rs.Decode(received, map, N, progress, ct)`; validates that exactly `N` 64-byte chunks came back; concatenates and gates them.
+
+When no choice points exist, this single attempt *is* the whole pipeline apart from stage 3 — the common case: an intact or merely truncated stream assembles here in one pass.
+
+`TryAssembleDirect()` and `TryAssembleWithEcc(rs)` also exist as internal parameterless wrappers over the preferred selection; tests use them to probe slot state directly.
+
+## 9. Choice points: where versions actually branch
+
+A **choice point** is a collision slot whose top counters are tied. For each sector with ≥ 2 versions, `BuildChoicePoints` counts how many leading versions share the maximum `ConfirmationCount` — that is `TiedVariantCount`. A slot becomes a choice point only when `TiedVariantCount ≥ 2`.
+
+| Version counters in one slot | Choice point? | Branches |
+|---|---|---|
+| 5 | no | — |
+| 5, 3 | no | the head is strictly best; no ambiguity |
+| 5, 5, 3 | yes | 2 |
+| 5, 5, 5, 2 | yes | 3 |
+| 4, 4, 4, 4 | yes | 4 |
+
+The design rationale: a strictly dominant version is the decoder's unambiguous belief — trying its runners-up would burn the budget on the least likely hypotheses. The search space is defined *only by actual ambiguity*: ties among the most confirmed candidates. Versions below the tie group are never branched on by stage 2; if they are right and the head is wrong, stage 3 can still rescue the file by excluding the whole slot (§14).
+
+`ChoicePoint` (internal) holds the sector number, a **live** reference to the version list, and `TiedVariantCount`. The live reference is what allows the rotation search to reorder the list in place.
+
+The joint search space of stage 2 is the product of all `TiedVariantCount` values — `SectorCombinationMath.CountCombinations` (§15).
+
+## 10. Strategy decision after the first attempt
+
+When choice points exist, the initial state (all heads) is attempted first, as attempt #1, *with progress suppressed* — the measurement doubles as calibration:
+
+- `firstAttemptTicks` — wall-clock cost of one full attempt (direct + full-map RS + hashing) on this machine, on this data.
+- `combinationCount = CountCombinations(tiedCounts)` — the size of the joint space.
+- `estimatedSeconds = firstAttemptTicks / Stopwatch.Frequency × combinationCount` — the linear cost model of exhausting the space.
+
+`SectorCombinationMath.ShouldUseExhaustiveSearch(combinationCount, estimatedSeconds, options)` selects the strategy:
+
+| Condition | Consequence |
+|---|---|
+| `combinationCount ≤ MaxExhaustiveCombinations` **and** `estimatedSeconds ≤ TimeBudget` | exhaustive search (§11) — completeness guaranteed. |
+| otherwise | heuristic rotation (§12) — bounded coverage, cheap states. |
+
+With defaults (100,000 combinations, 30 s) the overwhelming majority of realistic cases go exhaustive; rotation is the safety valve for pathological tie structures (for example, a hundred slots with 64 tied versions each).
+
+> [!NOTE]
+> The time estimate is a *linear extrapolation of one measurement*. It is deliberately conservative: one real attempt is measured rather than modelled, so machine speed, file size and RS state are all baked in.
+
+## 11. Stage 2a — exhaustive search
+
+`TryExhaustiveSearch` enumerates the full Cartesian product of the tie groups:
+
+- `indexes[k]` — the current pick in each of the `k` choice points; `moduli[k] = TiedVariantCount_k`.
+- `SectorCombinationMath.AdvanceIndexes(indexes, moduli)` increments the mixed-radix counter (odometer: last wheel first, carry on wrap) and returns `false` when the counter wraps past the last combination — the natural stop.
+- Combination 0 (all heads) was already tried as attempt #1; the loop starts at 1.
+- `ApplyIndexes` writes the picked versions into the `selected` array; `TryAssembleSelected` runs the attempt.
+- Between attempts: `ct.ThrowIfCancellationRequested()` and the wall-clock check `timer.Elapsed ≥ TimeBudget` — the budget is **soft**, enforced at attempt boundaries, never mid-attempt.
+- Progress is reported through the throttled channel (§15) as `completed / combinationCount`.
+
+Exhaustive search is *complete within the tie groups*: if any combination of tied head versions assembles a file that passes the gate, this stage finds it — provided the limits hold. Complexity is exactly one attempt per combination.
+
+## 12. Stage 2b — heuristic rotation
+
+`TryRotationSearch` is the fallback when the joint space is too large to enumerate.
+
+**Mechanics.** After each failed attempt, every choice point's tie group is rotated by one: the head version moves to the end of the tied block (`RotateTiedVariants` — remove index 0, insert at `TiedVariantCount − 1`). Versions below the tie are untouched, so the descending-sort invariant of §4 survives. The next attempt then re-runs `BuildPreferredSelection` — which now picks the new heads.
+
+**Worked micro-example** (from the reference implementation): two slots, `A/B/C` and `X/Y` (three and two tied versions). Synchronous stepping yields:
+
+```text
+attempt 1: A + X      attempt 4: A + Y
+attempt 2: B + Y      attempt 5: B + X
+attempt 3: C + X      attempt 6: C + Y
+```
+
+**State count.** The joint state of synchronously stepping wheels of sizes `t1..tk` repeats with period `LCM(t1..tk)`. `SectorCombinationMath.CountRotationStates(tiedCounts, MaxHeuristicAttempts)` computes exactly that LCM, with two safeguards: the intermediate LCM is overflow-limited, and the result is capped at `MaxHeuristicAttempts` (the cap includes the already-tried initial state; the loop runs `stateCount − 1` further attempts).
+
+**Coverage.** Rotation visits `LCM` distinct combinations out of the `Π ti` in the space. When the tie counts are pairwise coprime — as 3 and 2 above — `LCM = Π` and rotation is *complete*. When counts share factors (say 2 and 4: `LCM = 4 < 8`), some combinations are never visited; that is the accepted price of the fallback. Which combinations are visited is fully determined by the current version order, and the order-stability rule of §4.2 guarantees the walk is reproducible.
+
+| Property | Exhaustive (§11) | Rotation (§12) |
+|---|---|---|
+| Trigger | space within limits | space too large |
+| States visited | all `Π ti` | `min(LCM(ti), MaxHeuristicAttempts)` |
+| Completeness | yes, within tie groups | only if tie counts pairwise coprime |
+| Per-state cost | one attempt | one attempt |
+| Order of hypotheses | odometer (last slot varies fastest) | round-robin fairness across slots |
+
+## 13. The final gate: trim, verify, wipe
+
+Every attempt ends in `TrimAndVerify(buffer, acceptedSignatures)`:
+
+1. **Trim.** The buffer is `N·64` bytes; the file is `FileSize` bytes. If the lengths differ, the first `FileSize` bytes are copied out as the candidate result.
+2. **Base gate — Exact(SHA-256).** `Sha256Secure.HashData(result)` must equal the header's `H3` byte-for-byte. On mismatch the attempt's buffers are wiped (§13.4) and the gate returns `null` — the attempt failed, the search continues.
+3. **Extended gate — Any(SHA-512).** When `acceptedSignatures` is not `null`, `Sha512Secure.HashData(result)` (64 bytes, computed once into a stack buffer) must equal at least one collected `S1`. On failure: `_signatureRejected = true`, buffers wiped, `null` returned — and the search continues, because a different branch might reconstruct content that *is* confirmed.
+4. **Wipe.** `Wipe(buffer, result)` zeroes both the working buffer and the trimmed copy before any failed return. Nothing unverifiable survives an attempt in memory.
+
+### 13.3 Why a signature failure throws instead of returning `null`
+
+`_signatureRejected` is reset at `TryAssemble` entry and can be set by any attempt. After all stages:
+
+- some attempt passed Exact(SHA-256) — the header's own content hash — but no signature confirmed it, and no fully-confirmed assembly was found either ⇒ `TryAssemble` **throws** `SignatureVerificationException`;
+- otherwise failure is reported as plain `null`.
+
+The distinction matters operationally. `null` means "not enough verified data". The exception means "content that satisfies the file's own 256-bit description was reconstructed, yet the independent 512-bit signatures disagree with it" — the signature set and the header do not describe the same bytes. Typical causes: signature packets and header packets came from transmissions of *different* files (mixed fragments), or a header was tampered with while signature packets survived. The decoder refuses to pass such bytes off as a success and refuses to bury the signal inside a `null`.
+
+The exact interplay of the modes (`Base` always `null`, `Auto` non-null iff ≥ 1 signature received, `Force` always non-null) is specified in [AlgorithmGuide §11.5](AlgorithmGuide.en.md) — from the slot's point of view, the mode has already been reduced to the single question "is `acceptedSignatures` null?".
+
+## 14. Stage 3 — volume subset search
+
+### 14.1 Why it exists
+
+Stages 1–2 have a blind spot: a volume (data *or* ECC) whose packet is internally consistent but wrong. The sector's index is intact and its 72-bit `D3` check passed — by accident with probability about 2⁻⁷² per packet, or because an adversary spent the work to forge one. The slot then holds a *single* version: no branch point exists, stage 2 has nothing to search, and stage 1's RS pass treats the forged volume as truth — the syndrome check inside RS will simply fail, or worse, silently confirm wrong data when the parity happens to match.
+
+Stage 3 covers exactly this case: **suspect the data itself**. A set of volumes is declared erased; RS recomputes them from the survivors; the final SHA-256 gate arbitrates. Forging a packet that survives stage 3 requires forging the file's full SHA-256 — 2⁻²⁵⁶ — or defeating the signature gate on top.
+
+### 14.2 Preconditions and snapshot
+
+`TryVolumeSubsetSearch` runs only when `rs` is available and `M ≥ 1` (without parity there is nothing to restore from). It builds a `VolumeReception[T]` snapshot (`BuildVolumeReceptions`):
+
+| Field | Meaning |
+|---|---|
+| `Present` | At least one version received. |
+| `VariantCount` | Distinct versions. |
+| `HeadConfirmationCount` | Counter of the head version — the slot's confidence. |
+| `HasCollision` | `Present && VariantCount > 1`. |
+
+Missing volumes are the struct default (`Present = false`). The seed for all pseudo-randomness below is the first 4 bytes of `H5` read little-endian (`BinaryPrimitives.ReadUInt32LittleEndian(HeaderHash)`) — fixed per file, never transmitted separately.
+
+### 14.3 The planner: base, candidates, levels
+
+`SubsetMaskPlanner.Plan(volumes, N, M, options, seed)` is a pure function (the style of `SectorCombinationMath`): snapshot in, plan out, no slot access. The plan (`SubsetMaskPlan`) is an upper-bound attempt count plus a **lazy** enumeration of exclusion masks — each mask a sorted array of volume numbers to treat as erased.
+
+The mask space is structured in levels:
+
+| Level | Content | Order |
+|---|---|---|
+| Base | **All** collision slots at once | single mask (if any collisions exist) |
+| 1 | Base + one extra excluded volume, per candidate | by ascending suspicion |
+| 2..`MaxExtraExclusionLevel` | Base + combinations of `t` candidates from the shortlist | lexicographic |
+
+Decisions embedded in the planner:
+
+- **Base = every collision slot.** Their versions are *not* enumerated here (stage 2 already did that within tie groups); instead the whole slot is cut out and restored by RS. If the base alone does not fit the ECC budget or the `E` cap, the plan is empty: partially-excluded collisions are not attempted (§14.4 explains why the budget is binary, not incremental).
+- **Candidates** are present, non-collision volumes. The candidate order is built deterministically: Fisher–Yates shuffle over the candidate list keyed by the `H5`-derived seed (vendored `Mt19937`, [DeveloperGuide](DeveloperGuide.en.md)), then a stable sort by ascending `HeadConfirmationCount`. Least-confirmed volumes come first — they are the most suspicious; ties keep the shuffled order. Same snapshot + same header ⇒ same candidate order, on every run, on every machine.
+- **Level 1 sweeps all candidates**; levels ≥ 2 draw from the `ShortlistSize` most suspicious ones only — a bounded frontier against combinatorial growth (`C(64, 2) + C(64, 3) = 2 016 + 41 664` masks by default).
+
+### 14.4 Feasibility of a mask
+
+A mask is generated only if `IsFeasible` holds, with (recall `E` from §1):
+
+- `erasedData = missingData + (excluded data volumes)`;
+- `excludedEcc` = excluded ECC volumes;
+- `availableEcc = M − missingEcc − excludedEcc`.
+
+Rules:
+
+1. `erasedData ≥ 1` — a mask that erases no data volume is an RS passthrough and would repeat stage 1; skipped. (Pure-ECC exclusions are skipped *unless* data volumes are already missing — and they are genuinely useful then: a corrupt parity volume can be cut out so RS decodes from the remaining parity.)
+2. `erasedData ≤ MaxErasedDataVolumes` — the `E` cap; `E` is the dominant cost driver of the Gaussian inversion (~`E²·N`), so it is limited independently of attempt counts.
+3. `erasedData ≤ availableEcc` — RS can restore at most as many erased data volumes as surviving parity allows. This is also why base feasibility is all-or-nothing: the budget `availableEcc` shrinks with every exclusion, so "exclude half the collisions now, the rest later" is not a valid schedule — each mask must be self-consistent.
+
+### 14.5 Determinism
+
+The plan is a pure function of `(volumes, N, M, options, seed)`. The seed is fixed by the file's `H5`; the shuffle and stable sort are deterministic; `Combinations` enumerates lexicographically. Consequences: reproducible recovery runs (essential for debugging and for the [CollisionBench](CollisionBench.en.md) methodology), and no reliance on ambient randomness that could differ between the GUI, the console app and the test suite.
+
+### 14.6 Execution loop
+
+For each mask from the lazy enumeration, in order:
+
+1. check `attempted ≥ MaxAttempts` and the wall clock against `TimeBudget` — break on either (both **soft**, checked between attempts);
+2. run `TryAssembleWithEcc(rs, selected, ..., forcedErasure: mask, ...)` — the attempt of §8 with the mask's volumes removed from the RS input map;
+3. report throttled progress as `attempted / AttemptUpperBound`;
+4. first gate pass wins and returns.
+
+`AttemptUpperBound` is the planner's a-priori count: `1` (base, if feasible) `+ candidates.Length + Σ C(shortlist, t)` over levels 2..`MaxExtraExclusionLevel`, saturated at `long.MaxValue`. It is an *upper* bound — infeasible masks are skipped without being attempted, so the loop can finish early; progress simply reaches 100 % at completion of the enumeration.
+
+### 14.7 The repair narrative
+
+Putting §14.1–§14.6 together, the stage tells this story: "Something in what I received is lying, and I cannot see it directly. I will cut out what I trust least — first the ambiguous slots, then the least-confirmed volumes, then small groups of them — and each time let the mathematics rebuild the hole and the file's own SHA-512-bound signature decide." Each step of that story costs one bounded, deterministic attempt.
+
+## 15. Progress reporting, cancellation, memory
+
+- **Scale.** All progress is on one global 0..100 scale. Stage messages carry the stage name and counters (`SectorVersionSearch`, `HeuristicRotation`, `ExhaustiveSearch`, `VolumeSubsetSearch`, `RsRecovery`...); the subset stage reports `attempted / AttemptUpperBound`.
+- **Throttling.** `ReportSearchProgress` recomputes the integer percentage, clamps it to ≤ 99, and reports only when it changes — at most one hundred messages per stage regardless of attempt count, and never a premature 100.
+- **Suppression inside attempts.** Searches run attempts with `progress: null`; only stage-level milestones surface. The single-attempt path (§8) forwards a scaled sub-progress to the RS decoder.
+- **Cancellation.** `ct.ThrowIfCancellationRequested()` at `TryAssemble` entry and before every attempt in every stage; RS decode receives the token as well.
+- **Counters that saturate.** Version counters, header counters, combination counts and attempt bounds all saturate (`int.MaxValue` / `long.MaxValue`); the formatter replaces `long.MaxValue` with an overflow placeholder instead of printing nonsense.
+- **Memory hygiene.** Failed attempts wipe their buffers (§13.4); snapshots are defensive copies; the lazy mask enumeration materializes one mask at a time.
+
+## 16. SectorCombinationMath: the arithmetic toolbox
+
+All stage-2 arithmetic lives in one internal static class of pure functions — no state, fully unit-tested in isolation:
+
+| Function | Role |
+|---|---|
+| `Gcd(a, b)` | Euclid's algorithm; building block of the LCM. |
+| `LeastCommonMultipleLimited(a, b, limit)` | LCM with overflow protection — returns `limit` rather than wrapping. |
+| `CountCombinations(tiedCounts)` | Product of tie sizes — the exhaustive space; saturates at `long.MaxValue`. |
+| `CountRotationStates(tiedCounts, limit)` | `LCM` of tie sizes, capped at `limit` — the rotation period (§12). |
+| `AdvanceIndexes(indexes, moduli)` | Mixed-radix odometer step; `false` on wrap-around — the enumeration stop condition. |
+| `ShouldUseExhaustiveSearch(count, estimatedSeconds, options)` | The two-condition strategy rule of §10. |
+
+The companion of the planner side is `SubsetMaskPlanner` with its own combinatorics (saturating binomials, lexicographic `Combinations`) — same discipline: pure, deterministic, testable without a slot.
+
+## 17. Options reference and tuning
+
+### 17.1 `SectorVersionSearchOptions` (stage 2)
+
+| Option | Default | Meaning |
+|---|---|---|
+| `MaxExhaustiveCombinations` | 100,000 | Hard cap on the enumerated joint space of tie groups. |
+| `MaxHeuristicAttempts` | 100,000 | Cap on rotation states; **includes** the initial attempt. |
+| `TimeBudget` | 30 s | Soft wall-clock budget, checked between attempts. |
+| `SubsetSearch` | `VolumeSubsetSearchOptions.Default` | Nested options of stage 3. |
+
+`Validate()` enforces positive values. `Default` is the calibration below.
+
+### 17.2 `VolumeSubsetSearchOptions` (stage 3)
+
+| Option | Default | Meaning |
+|---|---|---|
+| `MaxAttempts` | 100,000 | Ceiling on mask attempts; the earlier of it and the budget applies. |
+| `TimeBudget` | 30 s | Soft budget, checked between attempts. |
+| `MaxErasedDataVolumes` | 32 | Cap on `E` per attempt — the separate knob because `E` drives ~`E²·N` inversion cost. |
+| `ShortlistSize` | 64 | Frontier for levels ≥ 2: `C(S, t)` masks per level. |
+| `MaxExtraExclusionLevel` | 3 | Deepest level of extra exclusions (3 ⇒ pairs and triples on top of singles). |
+
+### 17.3 Calibration background
+
+Defaults were measured with the RS benchmark (`RsRaid16Demo`, mode "bench"; methodology in [CollisionBench](CollisionBench.en.md)). One subset attempt costs `Init` (~`O(E²·N)`) plus 32 × `Process` (~`O(E·N)`) plus a final SHA-256 over `N·64` bytes. At the cap `E ≤ 32`, even the largest legal file (`T = 65,535`) completes ≥ 40 attempts inside the 30-second budget — hence 32 and 30 s fit together by construction, not by coincidence.
+
+### 17.4 Tuning recipes
+
+| Scenario | Change | Rationale |
+|---|---|---|
+| Interactive decoding (UI thread responsiveness) | both `TimeBudget` ≈ 5 s | soft budgets abort gracefully; user can retry with more |
+| Hostile channel, adversarial mixing | keep defaults; ensure signatures are sent (`signaturePackets512`) | stage 3 + Any(SHA-512) are the anti-forgery pair |
+| Overnight batch recovery | `TimeBudget` minutes; `MaxAttempts` 10⁶ | wall-clock is the only real constraint |
+| Deep suspicion of clustered corruption | `MaxExtraExclusionLevel` 4, `ShortlistSize` 96 | quadruples+ of suspects — see the caution below |
+| Constrained hardware | `MaxErasedDataVolumes` 16; budgets 10 s | inversion cost scales with `E²` |
+
+> [!CAUTION]
+> `C(96, 4) ≈ 3.3 × 10⁶` masks on level 4 alone. Raising `MaxExtraExclusionLevel` multiplies the plan quadratically-to-factorially; always re-estimate with `AttemptUpperBound` logic in mind before shipping a configuration.
+
+## 18. Cost model
+
+| Operation | Cost |
+|---|---|
+| `AddSector` | O(versions in slot) byte compares + bounded shift; ~constant in practice |
+| `GetSectorVersions` / snapshots | O(versions) with defensive copies |
+| `BuildPreferredSelection` / `BuildChoicePoints` / `BuildVolumeReceptions` | O(T + total versions) |
+| `CountCombinations` / `CountRotationStates` | O(choice points) |
+| Planner (`Plan`) | O(T) shuffle + O(T log T) sort; enumeration O(1) amortized per mask |
+| One attempt, direct | copy `N·64` + SHA-256 over `FileSize` |
+| One attempt, with RS | + Init ~O(E²·N) + 32 × Process ~O(E·N) |
+| Whole stage 1 | one attempt |
+| Whole stage 2 | ≤ `min(Π ti, limits)` attempts |
+| Whole stage 3 | ≤ `min(AttemptUpperBound, MaxAttempts, budget)` attempts |
+
+## 19. Worked examples
+
+### 19.1 Tied versions resolved by exhaustive search
+
+File: 200 B, defaults ⇒ `N = ⌈200/64⌉ = 4`, `M = max(1, round(0.4)) = 1`, `T = 5`, three header copies. The mangled stream delivered sectors 0, 1, 3, 4 cleanly, and sector 2 **twice with two distinct payloads** `A` and `B` — each copy individually verified (a truncated-hash coincidence or a forged variant; the slot cannot tell and does not need to).
+
+- Version lists: sector 2 → `A (2), B (2)`; others single-version.
+- `BuildChoicePoints`: one point at sector 2, `TiedVariantCount = 2`. `CountCombinations = 2`.
+- Attempt 1 (heads, i.e. `A`): direct assembly → SHA-256 mismatch → full-map RS → passthrough, mismatch again → `null`. Measured: say 0.4 ms.
+- Decision: `2 ≤ 100,000` and `0.8 ms ≤ 30 s` ⇒ exhaustive.
+- Exhaustive, combination 1 (`B`): direct assembly → SHA-256 matches; signatures (if active) confirm ⇒ **success**, progress 100.
+
+Total: two attempts. The tie was resolved by the file's own content hash, not by trust in counters.
+
+### 19.2 Invisible corruption resolved by subset search
+
+File: 640 B ⇒ `N = 10`, `M = 1`, `T = 11`; every volume present, **no collisions**, so no choice points. Data volume 4 is silently wrong: its packet passed the 72-bit `D3` check but its payload is forged.
+
+- Stage 1: direct assembly → mismatch. Full-map RS: zero erasures ⇒ the corrupt volume is trusted ⇒ mismatch. `null`.
+- Stage 2: no choice points ⇒ skipped entirely.
+- Stage 3 (`M = 1 ≥ 1`, adapter present): snapshot — all `Present`, all `VariantCount = 1`, all `HeadConfirmationCount = 1`. Base = ∅ (no collisions ⇒ no base mask). Candidates: all 11 volumes, shuffled by the `H5` seed; all counts equal ⇒ the shuffle order *is* the candidate order. Say it comes out `7, 3, 4, 9, 0, …`.
+  - Mask `{7}`: `erasedData = 1 ≤ availableEcc = 1` ⇒ feasible. RS restores volume 7 — to its original value, since 7 was fine — assembly still fails on volume 4. `null`.
+  - Mask `{3}`: same story. `null`.
+  - Mask `{4}`: volume 4 erased ⇒ RS recomputes it from the syndrome ⇒ original bytes restored ⇒ SHA-256 passes, signature confirms ⇒ **success**.
+- The ECC volume masks (`{10}` and any other `i ≥ N`) fail rule 1 of §14.4 — no erased data ⇒ skipped before any work.
+
+`AttemptUpperBound = 0 + 11 + C(11, 2) + C(11, 3) = 11 + 55 + 165 = 231`; the search stopped after 3 attempts. With `M = 1`, at most one data volume per mask can be excluded — which is exactly why level 1 sweeps *all* candidates: with a single parity volume, the only hypothesis space is "which one volume lies".
+
+## 20. Glossary
+
+| Term | Meaning |
+|---|---|
+| Reception slot | Per-header decoder state: versions, counters, cursor, assembly. |
+| Version (`SectorVariant`) | One candidate 64-byte payload for one sector number, with a confirmation counter. |
+| Confirmation count | How many verified copies carried exactly this payload. |
+| Collision slot | Sector number with ≥ 2 distinct versions. |
+| Choice point | Collision slot whose leading versions tie on the maximum confirmation count. |
+| Tied count | How many versions share that maximum — the branching factor of the slot. |
+| Combination count | Product of tied counts — the size of the stage-2 space. |
+| Rotation state | One synchronized step of all tie groups; the sequence has LCM period. |
+| Preferred selection | The head version of every sector — attempt #1 of every assembly. |
+| Attempt | One assembly trial arbitrated by the final gate. |
+| Final gate | Trim to `FileSize`, then Exact(SHA-256), then Any(SHA-512) when active. |
+| Exclusion mask | Sorted set of volume numbers declared erased for one RS attempt. |
+| Base | The all-collisions exclusion that every stage-3 mask carries. |
+| Candidate | A present, non-collision volume eligible for extra exclusion. |
+| Shortlist | The `ShortlistSize` most suspicious candidates; frontier for levels ≥ 2. |
+| Level | Extra-exclusion depth: 1 = singles, 2 = pairs, …, `MaxExtraExclusionLevel`. |
+| `E` / available ECC | Erased data volumes per attempt / parity volumes surviving (`M − missingEcc − excludedEcc`). |
+| `AttemptUpperBound` | Planner's a-priori mask count for progress display. |
+| Soft budget | Time limit enforced between attempts, never mid-attempt. |
+| Mt19937 | Vendored, hash-pinned Mersenne Twister used for the deterministic candidate shuffle. |
+
+## 21. Document map
+
+| Document | Content |
+|---|---|
+| [AlgorithmGuide](AlgorithmGuide.en.md) | Wire format and algorithms; packet fields (`H1..H5`, `D1..D3`, `S1..S2`), hashing, RS layer, pipeline overview. |
+| [EncoderGuide](EncoderGuide.en.md) | Using the encoder: input modes, output text formats, statistics, reports. |
+| [DecoderGuide](DecoderGuide.en.md) | Using the decoder: text filtering, scanning, multi-file reception, reports. |
+| [AssemblyGuide](AssemblyGuide.en.md) (this file) | Slot model, version search, subset planning, limits and tuning. |
+| [CollisionBench](CollisionBench.en.md) | Benchmark methodology and measured resilience under damage patterns. |
+| [DeveloperGuide](DeveloperGuide.en.md) | Project layout, build, test suite, vendored references (`Mt19937`). |
+| [UserGuide](UserGuide.en.md) | End-to-end usage from the console application and the GUI. |
+
+Russian mirrors of every document carry the `ru` suffix (`AssemblyGuide.ru.md`, …).

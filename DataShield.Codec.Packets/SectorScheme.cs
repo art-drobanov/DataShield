@@ -1,4 +1,4 @@
-namespace DataShield.Codec.Packets;
+﻿namespace DataShield.Codec.Packets;
 
 /// <summary>
 /// Схема хеширования секторов данных.

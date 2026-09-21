@@ -1,4 +1,4 @@
-using DataShield.Codec.Reporting;
+﻿using DataShield.Codec.Reporting;
 using Xunit;
 
 namespace DataShield.Codec.Reporting.Tests;

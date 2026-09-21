@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using DataShield.Codec.Packets;
 using DataShield.Codec.Reporting;
 using DataShield.Codec.StreamProcessor;
@@ -41,15 +41,31 @@ public sealed class DataShieldCodec : IDataShieldCodec
     /// <param name="sectorScheme">Схема хеширования секторов данных.</param>
     /// <param name="virtualIndexSectorLimit">Порог схемы VirtualIndex (N+M).</param>
     /// <param name="searchOptions">Настройки обхода коллизий версий декодера.</param>
+    /// <param name="signaturePackets512">
+    /// Кодирование с сигнатурными пакетами SHA-512: за каждой копией
+    /// заголовка следует сигнатурный пакет.
+    /// </param>
+    /// <param name="signatureMode">Режим декодера для сигнатурных пакетов SHA-512.</param>
+    /// <param name="hashSecret">
+    /// Секрет хеширования на время операций (null/пустая — без секрета);
+    /// при декодировании должен совпадать с секретом кодирования.
+    /// </param>
     public DataShieldCodec(
         int eccPercent = 10,
         int headerPercent = StreamEncoder.DefaultHeaderPercent,
         SectorScheme sectorScheme = SectorScheme.Classic,
         int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit,
-        SectorVersionSearchOptions? searchOptions = null)
+        SectorVersionSearchOptions? searchOptions = null,
+        bool signaturePackets512 = false,
+        SignatureMode signatureMode = SignatureMode.Auto,
+        string? hashSecret = null)
     {
-        _encoder = new StreamEncoder(eccPercent, headerPercent, sectorScheme, virtualIndexSectorLimit);
-        _decoder = new StreamDecoder(searchOptions, sectorScheme, virtualIndexSectorLimit);
+        _encoder = new StreamEncoder(
+            eccPercent, headerPercent, sectorScheme, virtualIndexSectorLimit,
+            signaturePackets512, hashSecret);
+        _decoder = new StreamDecoder(
+            searchOptions, sectorScheme, virtualIndexSectorLimit, signatureMode,
+            hashSecret);
     }
 
     /// <inheritdoc/>
@@ -63,6 +79,24 @@ public sealed class DataShieldCodec : IDataShieldCodec
 
     /// <inheritdoc/>
     public int VirtualIndexSectorLimit => _encoder.VirtualIndexSectorLimit;
+
+    /// <inheritdoc/>
+    public bool SignaturePackets512 => _encoder.SignaturePackets512;
+
+    /// <inheritdoc/>
+    public string? HashSecret => _encoder.HashSecret;
+
+    /// <inheritdoc/>
+    public SignatureMode SignatureMode => _decoder.SignatureMode;
+
+    /// <inheritdoc/>
+    public int SignaturePacketCount => _decoder.SignaturePacketCount;
+
+    /// <inheritdoc/>
+    public bool SignatureCheckActive => _decoder.SignatureCheckActive;
+
+    /// <inheritdoc/>
+    public IReadOnlyList<byte[]> AcceptedSignatures => _decoder.AcceptedSignatures;
 
     // ── Кодирование: вход Stream ────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-using DataShield.Codec;
+﻿using DataShield.Codec;
 using DataShield.Codec.Packets;
 
 namespace DataShield.TestsHarness;

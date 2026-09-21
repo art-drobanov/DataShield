@@ -1,4 +1,4 @@
-using DataShield.Codec;
+﻿using DataShield.Codec;
 using DataShield.Codec.Packets;
 using DataShield.Codec.Reporting;
 using Xunit;

@@ -14,19 +14,23 @@ DataShield protects small files for transfer over unreliable channels: radio, te
 
 1. Choose a file. Limits: size up to 4 MB (more precisely, up to (65,535 − M) · 64 bytes with ECC; the size field allows up to 16,777,215 bytes, but the volume limit kicks in earlier); long names are automatically shortened to 14 characters with the extension preserved (e.g., `documents.tar.gz` → `docume~.tar.gz`).
 2. Set the ECC redundancy, % — how many redundant packets to add to the data packets. The default is 10%: recovery is guaranteed while no more than 10% of sectors are lost. A higher percentage means more reliability but a longer stream.
-3. Optionally enable "Virtual-index sector scheme (up to 512 volumes)": the sector packet carries no number field — its place is taken by a longer hash, raising the strength margin (up to 79 bits versus 72). The mode applies to files of at most 512 volumes (N+M); above that the encoder refuses with a clear message. The same option also applies to reception.
-4. Choose the output format:
+3. Optionally enable the virtual-index sector scheme (up to 512 volumes): the sector packet carries no number field — its place is taken by a longer hash, raising the strength margin (up to 79 bits versus 72). The mode applies to files of at most 512 volumes (N+M); above that the encoder refuses with a clear message. The same option also applies to reception.
+4. Optionally configure extra protection:
+   - the "SHA-512 signature packets" checkbox — after every header copy the stream gets a signature packet: the SHA-512 of the file contents plus a truncated self-hash; it does not restore the file itself, but gives the receiver independent confirmation of the result via the longer hash;
+   - the "Hash secret" field — the secret becomes a prefix of every integrity hash in the stream; without it the stream is indistinguishable from noise for outsiders (no headers are found at all). The same secret must be supplied on reception.
+5. Choose the output format:
    - **Text (Base64)** — one packet per line; fits chats, e-mails, text files;
    - **Binary** — raw 75-byte packets; more compact, for file-based channels.
-5. Press "Encode". Progress shows the phases: data preparation → ECC computation → packet building. The result is a stream ready to copy; you may copy it whole or in parts.
+6. Switch the mode to Encode and press "Run". Progress shows the phases: data preparation → ECC computation → packet building. The result is a stream ready to copy; you may copy it whole or in parts.
 
 The encoder automatically inserts several header copies (start, end, and evenly across the stream, ~3%), so the file's properties appear in the stream even under heavy losses.
 
 ## Receiving and Recovering (Decoding)
 
 1. Paste the received Base64 text or load a binary file; you may feed the stream in parts and in any order — the scanner finds packets in noise and retains everything not yet recognized.
-2. While scanning, the UI shows: found files (headers), each file's sector map (received/missing volumes), confirmation and collision counters.
-3. Press "Assemble". If the data suffices (all sectors present, or losses covered by ECC), the file is restored and verified by SHA-256 — the result is guaranteed bit-perfect. If the data is insufficient, the decoder refuses honestly: collect more packets and try again.
+2. As the operation runs, the UI shows the phase and progress; the result block and the sector map display the restored file's volumes (data/ECC), collisions, and gaps with confirmation and header-copy counters.
+3. If the stream was encoded with a hash secret, enter the same secret in the "Hash secret" field — without it packets fail verification and the stream looks empty. The SHA-512 signature mode sets the strictness of verification: `base` — signatures are merely counted; `auto` (default) — the result is additionally confirmed when at least one signature has been received; `force` — without received signatures the file is not produced even when SHA-256 matches.
+4. Switch the mode to Decode and press "Run". If the data suffices (all sectors present, or losses covered by ECC), the file is restored and verified by SHA-256 — the result is guaranteed bit-perfect. If the data is insufficient, the decoder refuses honestly: collect more packets and try again.
 
 Good to know:
 
@@ -40,19 +44,20 @@ Good to know:
 Besides the graphical interface, the solution ships console applications `DataShield.Console.RU` and `DataShield.Console.EN` (Russian or English output) — the same encoding and recovery from the command line:
 
 ```powershell
-dotnet run --project DataShield.Console.RU -c Release -- encode photo.jpg --ecc 20
-dotnet run --project DataShield.Console.RU -c Release -- decode photo.jpg.DataShield.txt --all --use-name
+dotnet run --project DataShield.Console.EN -c Release -- encode photo.jpg --ecc 20
+dotnet run --project DataShield.Console.EN -c Release -- decode photo.jpg.DataShield.txt --all --use-name
 ```
 
 By default encoding writes the stream next to the source file: `name.DataShield.txt` (Base64 text) or `name.DataShield.bin` (binary, `--format bin`). When decoding, the format is detected by extension (.txt / .bin); the result is saved with the `.DataShield.*` suffix stripped (or with `.out` inserted when there is no suffix, so the input is never overwritten).
 
-encode options: `--format text|bin`, `--ecc` (redundancy, %, default 10), `--header` (header copies, %), `--scheme classic|virtual`, `--output` (result path), `--quiet` (no progress). decode options: `--scheme`, `--all` (restore every file in the stream, not just the most complete one), `--use-name` (save under the original name from the header), `--output`, `--quiet`. Short forms (`-e 20`, `-o out`) and the `--key=value` spelling are accepted; the `help` command prints usage. A summary follows on completion: size, SHA-256, data/ECC volumes, header copies, scheme. Exit codes: 0 — success, 1 — error, 2 — bad arguments, 130 — interrupted with Ctrl+C (the operation finishes cleanly instead of being killed).
+encode options: `--format text|bin`, `--ecc` (redundancy, %, default 10), `--header` (header copies, %), `--scheme classic|virtual`, `--signatures` (SHA-512 signature packets after header copies), `--secret` (secret prefix for all hashes; supply the same one on reception), `--output` (result path), `--quiet` (no progress). decode options: `--scheme`, `--sigmode base|auto|force` (signature verification strictness; default auto), `--secret`, `--all` (restore every file in the stream, not just the most complete one), `--use-name` (save under the original name from the header), `--output`, `--quiet`. A stream encoded with a secret looks like there are no headers at all when decoded without the correct secret (exit code 1). Short forms (`-e 20`, `-o out`) and the `--key=value` spelling are accepted; the `help` command prints usage. A summary follows on completion: size, SHA-256 (and SHA-512 when signatures are on), data/ECC volumes, header and signature copies, scheme. Exit codes: 0 — success, 1 — error, 2 — bad arguments, 130 — interrupted with Ctrl+C (the operation finishes cleanly instead of being killed).
 
 ## Recovery Guarantees
 
 - Up to M sectors lost (M ≈ N · ECC%): the file is restored by the Reed–Solomon code.
 - All packets present: the file is assembled directly.
 - Forged packets (foreign data with a valid hash is practically impossible): when versions look equally plausible, the decoder searches through combinations and accepts only the one whose SHA-256 matches the header.
+- Silent corruption (a formally valid sector that breaks assembly): suspicious volumes are excluded and rebuilt from the remaining ones and ECC.
 - Integrity control: SHA-256 in the header; a result without a matching hash is never produced.
 
 ## Demonstration and Self-Check
@@ -70,6 +75,7 @@ The console version has its own bench, `DataShield.Console.Demo`: it continuousl
 | Default ECC   | 10% (recovers up to 10% losses)                |
 | Header copies | ~3%, minimum 3 (start/middle/end)              |
 | Sector scheme | Classic (default) or VirtualIndex (opt-in, up to 512 volumes) |
+| Signatures    | optional: SHA-512 packet after every header copy; hash secret — optional |
 | Maximum file  | ~4 MB without ECC, less with ECC               |
 | File name     | ASCII, up to 14 characters (longer — with `~`) |
 | Verification  | SHA-256 + truncated SHA-256 per packet         |

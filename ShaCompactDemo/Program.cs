@@ -3,18 +3,19 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using DataShield.Interfaces;
 
-namespace Sha256CompactDemo
+namespace ShaCompactDemo
 {
     // ─────────────────────────────────────────────────────────────────────────────
-    //  Демо: бесконечный стресс-тест Sha256Compact против эталонного SHA256 из .NET
+    //  Демо: бесконечный стресс-тест Sha256Compact/Sha512Compact против .NET
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Программа в бесконечном цикле генерирует случайные буферы произвольного
-    /// размера (1 байт..1 МБ), считает их хеш собственной реализацией
-    /// <c>Sha256Compact</c> и встроенной реализацией <c>SHA256</c> из .NET,
-    /// после чего сверяет результаты. Первое же несовпадение выводит оба хеша
-    /// и завершает работу; иначе раз в 100 итераций обновляется строка прогресса.
+    /// Программа в бесконечном цикле случайно выбирает алгоритм (SHA-256 или
+    /// SHA-512), генерирует случайный буфер произвольного размера (1 байт..1 МБ),
+    /// считает его хеш собственной компактной реализацией <c>Sha256Compact</c> или
+    /// <c>Sha512Compact</c> и встроенной реализацией из .NET, после чего сверяет
+    /// результаты. Первое же несовпадение выводит оба хеша и завершает работу;
+    /// иначе раз в 100 итераций обновляется строка прогресса.
     /// </summary>
     class Program
     {
@@ -35,22 +36,33 @@ namespace Sha256CompactDemo
         /// </summary>
         static void Main()
         {
-            Console.CursorVisible = false;
+            // Ctrl+C: вернуть курсор и завершиться штатно (без стек-дампа)
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true;
+                if (OperatingSystem.IsWindows() && !Console.IsOutputRedirected)
+                    Console.CursorVisible = true;
+                Environment.Exit(0);
+            };
+
+            if (OperatingSystem.IsWindows() && !Console.IsOutputRedirected)
+                Console.CursorVisible = false;
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             Console.ResetColor();
 
-            // Самопроверка по опубликованному вектору FIPS 180-4 ("abc")
-            if (!Sha256Compact.Test())
+            // Самопроверка по опубликованным векторам FIPS 180-4 ("abc")
+            if (!Sha256Compact.Test() || !Sha512Compact.Test())
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("   Sha256Compact self-test failed");
+                Console.WriteLine("   ShaCompact self-test failed");
+                Environment.ExitCode = 1;
                 return;
             }
 
             // Шапка демо-программы
-            PrintLine(" ╔════════════════════╗", ConsoleColor.DarkCyan);
-            PrintLine(" ║ Sha256Compact Demo ║", ConsoleColor.DarkCyan);
-            PrintLine(" ╚════════════════════╝", ConsoleColor.DarkCyan);
+            PrintLine(" ╔═════════════════╗", ConsoleColor.DarkCyan);
+            PrintLine(" ║ ShaCompact Demo ║", ConsoleColor.DarkCyan);
+            PrintLine(" ╚═════════════════╝", ConsoleColor.DarkCyan);
             PrintLine(" " + VersionLine, ConsoleColor.DarkGray);
             Console.WriteLine();
 
@@ -70,14 +82,15 @@ namespace Sha256CompactDemo
 
             while (true)
             {
-                // Случайная длина 1..MaxBufferSize и случайное содержимое
+                // Случайный алгоритм, случайная длина 1..MaxBufferSize и содержимое
+                bool sha512 = RandomNumberGenerator.GetInt32(2) == 1;
                 int len = RandomNumberGenerator.GetInt32(1, MaxBufferSize + 1);
                 var data = buffer.AsSpan(0, len);
                 RandomNumberGenerator.Fill(data);
 
                 // Хеш испытуемой реализацией и эталонной реализацией .NET
-                var ownHash = Sha256Compact.HashData(data);
-                var netHash = SHA256.HashData(data);
+                byte[] ownHash = sha512 ? Sha512Compact.HashData(data) : Sha256Compact.HashData(data);
+                byte[] netHash = sha512 ? SHA512.HashData(data) : SHA256.HashData(data);
 
                 tests++;
                 totalBytes += (uint)len;
@@ -87,9 +100,10 @@ namespace Sha256CompactDemo
                 if (!CryptographicOperations.FixedTimeEquals(ownHash, netHash))
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"   Error in test #{tests}, data size: {len:N0}");
-                    Console.WriteLine($"   Sha256Compact: {Convert.ToHexString(ownHash)}");
-                    Console.WriteLine($"            .NET: {Convert.ToHexString(netHash)}");
+                    Console.WriteLine($"   Error in test #{tests}, data size: {len:N0}, algorithm: SHA-{(sha512 ? 512 : 256)}");
+                    Console.WriteLine($"   Sha{(sha512 ? "512" : "256")}Compact: {Convert.ToHexString(ownHash)}");
+                    Console.WriteLine($"              .NET: {Convert.ToHexString(netHash)}");
+                    Environment.ExitCode = 1;
                     return;
                 }
 

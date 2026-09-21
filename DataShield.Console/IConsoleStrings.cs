@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using DataShield.Codec.Reporting;
 
 namespace DataShield.Console;
@@ -48,6 +48,9 @@ public interface IConsoleStrings
     /// <summary>«--scheme: неизвестное значение {0}».</summary>
     string BadSchemeValueFormat { get; }
 
+    /// <summary>«--sigmode: неизвестное значение {0}».</summary>
+    string BadSignatureModeFormat { get; }
+
     /// <summary>Сообщение при отмене по Ctrl+C.</summary>
     string CanceledByUser { get; }
 
@@ -86,6 +89,12 @@ public interface IConsoleStrings
 
     /// <summary>Метка сводки: SHA-256 содержимого.</summary>
     string Sha256Label { get; }
+
+    /// <summary>Метка сводки: SHA-512 содержимого (расширенная проверка).</summary>
+    string Sha512Label { get; }
+
+    /// <summary>Метка сводки: сигнатурные пакеты SHA-512.</summary>
+    string SignaturesLabel { get; }
 
     /// <summary>Метка сводки encode: тома (data + ECC).</summary>
     string VolumesLabel { get; }
@@ -126,8 +135,8 @@ public interface IConsoleStrings
     /// <summary>Строка успешного восстановления: путь и размер.</summary>
     string RestoredLineFormat { get; }
 
-    /// <summary>Строка decode: путь к файлу MAP-отчёта.</summary>
-    string MapLineFormat { get; }
+    /// <summary>Строка decode: путь к файлу отчёта (.report).</summary>
+    string ReportLineFormat { get; }
 
     /// <summary>Название текстового формата (Base64).</summary>
     string Base64FormatName { get; }

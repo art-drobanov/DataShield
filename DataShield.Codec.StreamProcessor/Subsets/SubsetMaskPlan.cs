@@ -1,4 +1,4 @@
-namespace DataShield.Codec.StreamProcessor.Subsets;
+﻿namespace DataShield.Codec.StreamProcessor.Subsets;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  План подбора подмножества томов

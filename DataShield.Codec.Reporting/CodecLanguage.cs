@@ -1,4 +1,4 @@
-namespace DataShield.Codec.Reporting;
+﻿namespace DataShield.Codec.Reporting;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Язык служебных сообщений кодека

@@ -1,4 +1,4 @@
-namespace DataShield.TestsHarness;
+﻿namespace DataShield.TestsHarness;
 
 /// <summary>Биты маски применённых повреждений (<see cref="DamageResult.Mask"/>).</summary>
 public static class DamageBits

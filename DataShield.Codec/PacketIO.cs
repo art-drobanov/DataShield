@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 using DataShield.Codec.Packets;
 using DataShield.Codec.Reporting;

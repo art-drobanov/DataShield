@@ -1,4 +1,4 @@
-namespace DataShield.Gui;
+﻿namespace DataShield.Gui;
 
 /// <summary>Режим работы приложения.</summary>
 public enum WorkMode

@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using DataShield.Codec;
 using DataShield.Codec.Packets;
 using DataShield.Codec.Reporting;
@@ -36,17 +36,27 @@ public sealed class DataShieldConsole : IDataShieldCodec
     /// <param name="sectorScheme">Схема хеширования секторов данных.</param>
     /// <param name="virtualIndexSectorLimit">Порог схемы VirtualIndex (N+M).</param>
     /// <param name="searchOptions">Настройки обхода коллизий версий декодера.</param>
+    /// <param name="signaturePackets512">Сигнатурные пакеты SHA-512 при кодировании.</param>
+    /// <param name="signatureMode">Режим декодера для сигнатурных пакетов SHA-512.</param>
+    /// <param name="hashSecret">
+    /// Секрет хеширования на время операций (null/пустая — без секрета);
+    /// при декодировании должен совпадать с секретом кодирования.
+    /// </param>
     public DataShieldConsole(
         bool quiet = false,
         int eccPercent = 10,
         int headerPercent = StreamEncoder.DefaultHeaderPercent,
         SectorScheme sectorScheme = SectorScheme.Classic,
         int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit,
-        SectorVersionSearchOptions? searchOptions = null)
+        SectorVersionSearchOptions? searchOptions = null,
+        bool signaturePackets512 = false,
+        SignatureMode signatureMode = SignatureMode.Auto,
+        string? hashSecret = null)
     {
         _quiet = quiet;
         _codec = new DataShieldCodec(
-            eccPercent, headerPercent, sectorScheme, virtualIndexSectorLimit, searchOptions);
+            eccPercent, headerPercent, sectorScheme, virtualIndexSectorLimit, searchOptions,
+            signaturePackets512, signatureMode, hashSecret);
     }
 
     /// <inheritdoc/>
@@ -60,6 +70,24 @@ public sealed class DataShieldConsole : IDataShieldCodec
 
     /// <inheritdoc/>
     public int VirtualIndexSectorLimit => _codec.VirtualIndexSectorLimit;
+
+    /// <inheritdoc/>
+    public bool SignaturePackets512 => _codec.SignaturePackets512;
+
+    /// <inheritdoc/>
+    public string? HashSecret => _codec.HashSecret;
+
+    /// <inheritdoc/>
+    public SignatureMode SignatureMode => _codec.SignatureMode;
+
+    /// <inheritdoc/>
+    public int SignaturePacketCount => _codec.SignaturePacketCount;
+
+    /// <inheritdoc/>
+    public bool SignatureCheckActive => _codec.SignatureCheckActive;
+
+    /// <inheritdoc/>
+    public IReadOnlyList<byte[]> AcceptedSignatures => _codec.AcceptedSignatures;
 
     // ── Кодирование ─────────────────────────────────────────────────────────
 

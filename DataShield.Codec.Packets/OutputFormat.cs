@@ -1,4 +1,4 @@
-namespace DataShield.Codec.Packets;
+﻿namespace DataShield.Codec.Packets;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Формат вывода FEC-потока

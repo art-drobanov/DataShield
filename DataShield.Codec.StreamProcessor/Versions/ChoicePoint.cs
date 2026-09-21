@@ -1,4 +1,4 @@
-namespace DataShield.Codec.StreamProcessor.Versions;
+﻿namespace DataShield.Codec.StreamProcessor.Versions;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Точка ветвления при поиске правильной комбинации версий

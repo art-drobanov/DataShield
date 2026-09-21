@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using DataShield.Codec.Ecc;
 using DataShield.Codec.IO;
 using DataShield.Codec.Packets;
@@ -46,6 +46,9 @@ public sealed class StreamDecoder : StreamCodec
 
     private readonly SectorVersionSearchOptions _searchOptions;
 
+    // Секрет хеширования операции (null/пустая — без секрета)
+    private readonly string? _hashSecret;
+
     // Сканеры обоих форматов: удержанные данные живут между вызовами Scan
     private SlidingWindowScanner? _txtScanner;
     private SlidingWindowScanner? _binScanner;
@@ -58,6 +61,25 @@ public sealed class StreamDecoder : StreamCodec
 
     /// <summary>Количество уникальных файлов (слотов) в потоке.</summary>
     public int FileCount => _processor.FileCount;
+
+    /// <summary>Режим работы с сигнатурными пакетами SHA-512.</summary>
+    public SignatureMode SignatureMode => _processor.SignatureMode;
+
+    /// <summary>Принято сигнатурных пакетов SHA-512 (с учётом копий).</summary>
+    public int SignaturePacketCount => _processor.SignaturePacketCount;
+
+    /// <summary>Активна ли расширенная проверка SHA-512 (см. SignatureMode).</summary>
+    public bool SignatureCheckActive => _processor.SignatureCheckActive;
+
+    /// <summary>Уникальные принятые сигнатуры SHA-512 (снимок).</summary>
+    public IReadOnlyList<byte[]> AcceptedSignatures => _processor.AcceptedSignatures;
+
+    /// <summary>
+    /// Секрет хеширования операции (контекстен, см. <see cref="SecretScopeGuard"/>):
+    /// должен совпадать с секретом кодирования, иначе заголовки не опознаются.
+    /// null/пустая строка — обычный режим без секрета.
+    /// </summary>
+    public string? HashSecret => _hashSecret;
 
     /// <summary>
     /// Создать декодер с настройками поиска версий секторов
@@ -74,10 +96,21 @@ public sealed class StreamDecoder : StreamCodec
     /// Порог схемы VirtualIndex: слоты с N+M выше порога проверяются
     /// только по классической схеме.
     /// </param>
+    /// <param name="signatureMode">
+    /// Режим сигнатурных пакетов SHA-512: Base — детект без влияния на
+    /// сборку; Auto (по умолчанию) — расширенная проверка при приёме хотя
+    /// бы одного сигнатурного пакета; Force — проверка всегда активна.
+    /// </param>
+    /// <param name="hashSecret">
+    /// Секрет хеширования на время операций (null/пустая — без секрета);
+    /// должен совпадать с секретом кодирования.
+    /// </param>
     public StreamDecoder(
         SectorVersionSearchOptions? searchOptions = null,
         SectorScheme sectorScheme = SectorScheme.Classic,
-        int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit)
+        int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit,
+        SignatureMode signatureMode = SignatureMode.Auto,
+        string? hashSecret = null)
         : base(sectorScheme, virtualIndexSectorLimit)
     {
         _searchOptions =
@@ -85,11 +118,13 @@ public sealed class StreamDecoder : StreamCodec
             SectorVersionSearchOptions.Default;
 
         _searchOptions.Validate();
+        _hashSecret = hashSecret;
 
         _processor = new DataShield.Codec.StreamProcessor.StreamProcessor(
             _searchOptions,
             sectorScheme: sectorScheme,
-            virtualIndexSectorLimit: virtualIndexSectorLimit);
+            virtualIndexSectorLimit: virtualIndexSectorLimit,
+            signatureMode: signatureMode);
         _processor.HeaderAccepted += OnHeaderAccepted;
     }
 
@@ -201,7 +236,15 @@ public sealed class StreamDecoder : StreamCodec
     /// <summary>
     /// Попытаться собрать файл по заголовку.
     /// Заголовок сериализуется в байты и сравнивается со слотами побайтово.
+    /// При активной расширенной проверке (см. <see cref="SignatureMode"/>)
+    /// собранный файл подтверждается хотя бы одной принятой сигнатурой
+    /// SHA-512: Exact(SHA-256) &amp; Any(SHA-512).
     /// </summary>
+    /// <exception cref="SignatureVerificationException">
+    /// Файл собран и подтверждён SHA-256, но не подтверждён ни одной
+    /// сигнатурой SHA-512 (нет сигнатурных пакетов либо чужие сигнатуры);
+    /// повреждение потока выражается возвратом null без исключения.
+    /// </exception>
     public byte[]? TryAssemble(HeaderContent header) => TryAssemble(header, progress: null, default);
 
     /// <inheritdoc cref="TryAssemble(HeaderContent)"/>
@@ -210,17 +253,18 @@ public sealed class StreamDecoder : StreamCodec
     /// <param name="ct">Токен отмены.</param>
     public byte[]? TryAssemble(HeaderContent header, IProgress<CodecProgress>? progress, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(header);
-
         lock (Gate)
         {
             ThrowIfDisposed();
+
+            using var _ = new SecretScopeGuard(_hashSecret);
+            var signatures = _processor.SignaturesForCheck();
 
             var hb = header.ToBytes();
             foreach (var slot in _processor.Slots)
             {
                 if (slot.HeaderMatches(hb))
-                    return slot.TryAssemble(Rs, progress, ct);
+                    return slot.TryAssemble(Rs, progress, ct, signatures);
             }
             return null;
         }
@@ -281,6 +325,7 @@ public sealed class StreamDecoder : StreamCodec
         bool text, IDataSource source, long totalBytes,
         IProgress<CodecProgress>? progress, CancellationToken ct)
     {
+        using var _ = new SecretScopeGuard(_hashSecret);
         VerifySha256();
 
         var scanner = text ? GetTxtScanner() : GetBinScanner();

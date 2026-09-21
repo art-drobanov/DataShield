@@ -1,4 +1,4 @@
-namespace DataShield.Codec.StreamScanner;
+﻿namespace DataShield.Codec.StreamScanner;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Обработчик окна сканера

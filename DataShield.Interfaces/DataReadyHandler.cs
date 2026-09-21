@@ -1,4 +1,4 @@
-namespace DataShield.Interfaces;
+﻿namespace DataShield.Interfaces;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Событие готовности данных источника

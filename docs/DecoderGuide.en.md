@@ -1,75 +1,290 @@
-# Stream Decoding — An Engineering Walkthrough
+# DataShield Alpha-XVI — Decoder Guide
 
-An engineering walkthrough of stream decoding: no formalism for its own sake — shorter notation, more "why it is built this way" and "how it behaves on a real stream". Context is in `AlgorithmGuide.en.md` (sections 5–9); the forward half of the codec is `EncoderGuide.en.md`.
+Reference for the receiving side: feeding damaged text or binary streams, scanning, multi-file reception, assembly entry points, reports and state management.
 
-## 1. What we are taking apart
+| | |
+|---|---|
+| Project | DataShield Alpha-XVI |
+| Document | `docs/DecoderGuide.en.md` (English); Russian mirror: `docs/DecoderGuide.ru.md` |
+| Audience | Application developers embedding the decoder (console, GUI, service); engineers integrating DataShield streams into pipelines |
+| Scope | `StreamDecoder` and its pipeline: input formats and `Scan` overloads, the Base64 filter, the sliding-window scanner, late-header rebinding, the reception processor boundary, assembly entry points, the facade (`DataShieldCodec`) decode operations, progress and cancellation, state and memory hygiene, report files |
+| Out of scope | Format and verification fundamentals ([AlgorithmGuide](AlgorithmGuide.en.md)), deep assembly mechanics ([AssemblyGuide](AssemblyGuide.en.md)), encoding ([EncoderGuide](EncoderGuide.en.md)), CLI and GUI ([UserGuide](UserGuide.en.md)) |
 
-`FileDecoder` takes a stream (Base64 text, raw bytes, a `Stream`, a file) and turns it into reception slots — one per recognized file. Assembling from a slot is a separate shop (`AssemblyGuide.*`); here it is only the delivery pipeline: source → Base64 filter (txt) → sliding-window scanner → accumulator. Two scanners (txt/bin) live simultaneously and retain the data they have passed between `Scan` calls. The constructor also takes `sectorScheme` (default Classic) and `virtualIndexSectorLimit` (1..512, default 512): under VirtualIndex the sector check is extended by the virtual-index scan (sections 6–8).
+Reference implementation: `DataShield.Codec` (`StreamDecoder.cs`, `StreamCodec.cs`, `DataShieldCodec.cs`, `PacketIO.cs`, `CodecReport.cs`, `DecodeResult.cs`), `DataShield.Codec.StreamFilter`, `DataShield.Codec.StreamScanner`, `DataShield.Codec.IO` and `DataShield.Interfaces`.
 
-## 2. Pipeline architecture
+## 1. Conventions used in this document
 
-Everything is built on the `IDataSource`/`IDataProcessor` interface pair (the `DataShield.Interfaces` assembly): a source reads blocks and announces `DataReady` with a take delegate; a processor `Attach`es to the source, does its work, and is itself a source for the next stage. `DataProcessorBase` provides: an output buffer with a delivery threshold, two output modes (byte `Emit` and packet `EmitPacket` — packets are never cut by delivery boundaries), cascading `Start/Stop/Complete`, all under `SyncRoot`. The `Error` channel: a source's exception bubbles up by delegation and `Completion` faults with that same error — I/O failures are not swallowed.
+- A **packet** is the 75-byte atomic unit — 100 Base64 characters on the wire ([AlgorithmGuide §4](AlgorithmGuide.en.md)).
+- `H5` — the 24-byte header hash; it seeds all sector checks of that file.
+- A **slot** is the per-header reception state (versions, collisions, counters); **assembly** turns a slot into file bytes.
+- "txt" input means arbitrary text containing Base64 material; "binary" input means raw concatenated 75-byte packets.
+- Progress values live on a global 0..100 scale; phase names come from `CodecStrings` (English by default, Russian via `CodecStrings.Language = CodecLanguage.Russian`).
+- `N`, `M`, `T = N + M` — data volume count, ECC volume count, total volumes.
 
-## 3. Input formats
+## 2. The decoding pipeline at a glance
 
-`Scan(IEnumerable<string>)` — the lines are concatenated, UTF8, then the txt pipeline; shorter than 100 characters — a silent exit. `Scan(byte[])` — binary input; shorter than 75 — silent. `Scan(Stream, OutputFormat)` — explicit format; the progress length is taken from seekable streams. `PacketIO.ScanFile` looks at the extension: `.txt` → Base64, `.bin` → Binary, anything unrecognized → Base64.
+Decoding is a chain of pull-driven, event-delivered stages:
 
-## 4. The Base64 filter
+```text
+source (bytes)  →  [txt only] Base64 filter  →  sliding-window scanner  →  reception processor  →  slots
+```
 
-`ByteRangeFilter.CreateBase64()` — a `bool[256]` table; passes `A-Z`, `a-z`, `0-9`, `+`, `/`. `=` is not needed: a packet line is exactly 100 characters with no padding. Line breaks, decorative framing, and garbage outside the alphabet are discarded before the scanner. In binary mode there is no filter in the chain.
+| Stage | Class | What it does |
+|---|---|---|
+| Source | `ByteArraySource`, `StreamSource`, `FileSource` (`DataShield.Codec.IO`) | Pumps bytes in a background task; delivers buffer-sized chunks through `DataReady`. |
+| Filter | `ByteRangeFilter` (`DataShield.Codec.StreamFilter`) | txt mode only: drops every byte outside the Base64 alphabet. |
+| Scanner | `SlidingWindowScanner` (`DataShield.Codec.StreamScanner`) | Slides a window (100 Base64 chars or 75 raw bytes) byte-by-byte; emits verified packets. |
+| Processor | `StreamProcessor` (`DataShield.Codec.StreamProcessor`) | Classifies packets (header / signature / sector), fills slots. |
+| Assembly | `ReceptionSlot.TryAssemble` | Reconstructs files — the subject of the [AssemblyGuide](AssemblyGuide.en.md). |
 
-## 5. The sliding window: forward pass
+Everything the decoder keeps between `Scan` calls (scanner tails, slots) is user data: it is wiped by `Clear()` and `Dispose()`.
 
-`SlidingWindowScanner(windowSize, handler)`: a window of 100 (txt) or 75 (bin); the `handler` returns an advance and optionally a packet. Failure → a 1-byte shift (a packet start cannot slip through); success → the packet is emitted and the window jumps by its size (the fast lane). The scanner **retains the entire stream** (`_retained`) — the price of rebinding (section 10). Progress goes out via the `ConsumedAdvanced` event at the forward-pass position.
+## 3. Quick start
 
-## 6. Packet recognition
+Cumulative reception with the core class:
 
-`FileDecoder.TxtWindow`: 100 characters → `Convert.TryFromBase64Chars` → 75 bytes; a decode failure or non-recognition → shift 1. `BinWindow`: raw 75 bytes straight to the check. `StreamProcessor.Recognizes` decides: a header — the autonomous `VerifyHeaderPacket` check (H5 over the first 51 bytes); a sector — iterating the slots with a hybrid check: the classic one first (the number within `0..T−1` and `VerifySectorPacket(packet, slot.HeaderHash)`), then — only for slots in `SectorScheme.VirtualIndex` with `T` within the limit — the virtual-index scan (`VirtualIndexHasher.TryVerifyPacket`, section 8). False positives: 2⁻¹⁹² per header, 2⁻⁷² per classic sector, K·2⁻⁸⁸ per B sector (K = T ≤ 512, i.e. no worse than 2⁻⁷⁹).
+```csharp
+using var decoder = new StreamDecoder();
 
-## 7. The accumulator: chunks → packets → slots
+decoder.Scan(File.ReadLines("mangled_chat_export.txt"));   // accumulate…
+decoder.Scan(moreLines);                                    // …across calls
 
-`StreamProcessor.ProcessChunk`: a 75-byte `_pending` buffer assembles packets out of arbitrarily bounded chunks. A complete packet: header → `AcceptHeader` (byte-wise comparison against the slots: a match → `IncrementHeaderCount`; a newcomer → `HeaderContent.ReadFrom` + `H5` + a new `ReceptionSlot`, with the `HeaderAccepted` event raised after the lock is released); a sector → into every fitting slot (`SectorMatches`: the classic check, and for VirtualIndex slots with `T` ≤ the limit — an index scan from the cursor; the found number then proceeds as usual → `AddSector(num, payload copy)`). Metrics out: `FileCount`, `TotalReceivedSectorCount`, `TotalReceivedSectorCopyCount`, `TotalCollisionSectorCount`.
+foreach (var slot in decoder.Slots)                         // one slot per distinct header
+{
+    try
+    {
+        var content = decoder.TryAssemble(slot.Header);
+        if (content is not null)
+            File.WriteAllBytes(slot.Header.FileName, content);
+    }
+    catch (SignatureVerificationException)
+    {
+        // Exact(SHA-256) passed but no accepted signature confirms it — see §10
+    }
+}
+```
 
-## 8. Slots and versions
+One-shot decoding through the facade:
 
-`ReceptionSlot` is a dictionary "number → version list by descending counter". All the version, collision, and assembly logic is `AssemblyGuide.en.md`. One thing matters for the pipeline: a sector fitting several slots lands in each (files have different `H5`s; a coincidence is practically impossible). A VirtualIndex slot holds the arrival cursor (`VirtualIndexCursor`): the scan starts at the expected next index, so an ordered stream costs one hash per sector; on a match the cursor advances. The scan is two-phase: the first 64 steps sequential, then with ≥ 256 candidates remaining — parallel blocks of 128 (`Parallel.For`); the lowest step number wins, preserving the determinism of the sequential walk.
+```csharp
+using var codec = new DataShieldCodec(signaturePackets512: true);
 
-## 9. Multi-file support
+byte[]? single = codec.Decode(
+    File.OpenRead("stream.DataShield.bin"), OutputFormat.Binary);
 
-There are as many slots as there are distinct headers in the stream. Every sector is checked against all slots; confirmations are separate. `Slots` is a snapshot under a lock and can be read concurrently with reception.
+List<DecodeResult> all = codec.DecodeAll(
+    File.OpenRead("stream.DataShield.txt"), OutputFormat.Base64);
 
-## 10. Targeted rebinding
+PacketIO.ScanFile(decoder, "stream.DataShield.txt");  // format auto-detected by extension
+```
 
-The problem: a sector before the first header is unrecognizable (no seed). The solution: on the `HeaderAccepted` event the decoder asks both scanners to rebind the retained data — a re-pass with `RebindWindow`: decode (txt), the number within the new `T`, `VerifySectorPacket` with the new `H5`; for VirtualIndex slots — the same pair of checks, the virtual-index scan from a zero cursor. The active scanner executes the request deferred (the bound is `_flushedPos`); an idle one — immediately over the whole traversed extent, with the accumulator temporarily attached to it. The rebinding is targeted: other slots are untouched.
+## 4. Constructing a decoder
 
-## 11. The rescan
+```csharp
+public StreamDecoder(
+    SectorVersionSearchOptions? searchOptions = null,
+    SectorScheme sectorScheme = SectorScheme.Classic,
+    int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit,
+    SignatureMode signatureMode = SignatureMode.Auto,
+    string? hashSecret = null)
+```
 
-Two hard rules of the re-pass. First — exhaustiveness: the window is checked at **every** position of the region, with no jumps; the forward pass jumps by the window after a success and, on damage, can leap over an overlapping packet — the re-pass closes those holes. Second — the boundary: rebinding goes only up to the forward pass's delivery position (`_flushedPos`, fixed in `OnDelivering` **before** the handlers run), otherwise confirmations would be doubled. Requests arriving during a pass are queued and executed after it.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `searchOptions` | `SectorVersionSearchOptions.Default` | Assembly search limits (version search, subset search) — catalogued in the [AssemblyGuide](AssemblyGuide.en.md). |
+| `sectorScheme` | `Classic` | `Classic` — receive only classic sector packets. `VirtualIndex` — hybrid reception: classic packets are checked first, then the virtual index is swept; files of both schemes are read simultaneously. |
+| `virtualIndexSectorLimit` | `512` | Slots with `T` above the limit are verified classically only (the sweep would be too broad and too weak — see [CollisionBench](CollisionBench.en.md)). Range 1..512. |
+| `signatureMode` | `Auto` | `Base` — detect signature packets, ignore them; `Auto` — extended check active once ≥ 1 signature packet arrives; `Force` — always active (missing signatures then fail assembly). |
+| `hashSecret` | `null` | Keyed hashing scope for the whole operation; must equal the encoder's secret, otherwise headers simply never verify. Empty string = no secret. |
 
-## 12. Pipeline finalization
+The base class `StreamCodec` validates the scheme enum and the limit range, and shares a stateless `RsCodecAdapter` (the RS matrix is rebuilt per call, so the instance is safe under parallel use — the decoder's own operations are serialized by an internal lock instead).
 
-`RunPipeline` closes the chain in order: `filter?.Complete()` → `scanner.Complete()` → `processor.Complete()`. The scanner's final delivery raises the boundary and launches the deferred rebinds — covering the forward pass's omissions. Skipping `Complete` = lost tails and missing rebinds; reception completeness is guaranteed only after it.
+Before every operation the decoder runs a hashing self-test (`Sha256Secure.Test()`, `Sha512Secure.Test()`) and refuses to operate if either fails — a corrupted crypto environment must not silently produce wrong verdicts.
 
-## 13. Progress and cancellation
+## 5. Input formats and the `Scan` overloads
 
-The phase: `HeaderSearch` while `FileCount == 0`, then `SectorSearch`; the percent is consumed/total via `ConsumedAdvanced`; the terminal is `Done` (100). Cancellation: checked in the progress callback and while awaiting `Completion`; the exception goes outward, the accumulated state survives.
+`Scan` is **cumulative**: each call adds to the slots and scanner tails; nothing is reset. The decoder distinguishes:
 
-## 14. Assembly
+| Overload | Input | Minimum length | Pipeline |
+|---|---|---|---|
+| `Scan(IEnumerable<string> lines)` | arbitrary text lines | 100 Base64 chars total | UTF-8 concatenation → filter → txt scanner |
+| `Scan(byte[] data)` | raw packet bytes (noise/resync tolerated) | 75 bytes | binary scanner, no filter |
+| `Scan(Stream input, OutputFormat format)` | stream of either format | — | format decides txt vs binary; seekable streams report length for progress |
+| `PacketIO.ScanFile(decoder, path)` | file | — | format auto-detected: `.txt` → Base64, `.bin` → Binary |
 
-`TryAssemble(HeaderContent)`: serialize the header → a byte-wise slot search → `slot.TryAssemble(_rs, progress, ct)`. The RS adapter is created once for the decoder's lifetime. Beyond that — `AssemblyGuide.en.md`.
+Notes:
 
-## 15. The I/O module and errors
+- Inputs shorter than one packet are silently ignored (nothing to scan).
+- The stream is **not** closed by `Scan`; the caller owns it.
+- Calls are serialized: a `Scan` in progress blocks other operations of the same instance.
 
-Sources: `ByteArraySource`, `StreamSource`, `FileSource`. Result sinks: `StreamDataWriter`, `FileDataWriter`, `ByteListWriter`, `PreallocatedBufferWriter`. The error channel: `BufferedSourceBase` catches a read exception, records it in `Error`, stops, and `Completion` faults; processors delegate `Error` upward. The result: a disk failure reaches the caller as an honest exception out of `Completion.Wait`, not as an empty result.
+## 6. The plumbing: sources, processors, delivery contract
 
-## 16. Guarantees and limits
+All stages implement `IDataSource`/`IDataProcessor` from `DataShield.Interfaces`:
 
-Guaranteed:
+- A **source** pumps bytes in a background task into a fixed buffer; when the buffer fills (or at EOF/stop) it raises `DataReady`, handing the consumer a one-shot take delegate; reading resumes after the handler returns. Read errors are captured and surface through `Completion` (and the `Error` property) — the pipeline fails loudly, never silently.
+- A **processor** attaches to an upstream source, transforms each chunk under its own lock, and re-emits downstream through its own output buffer. `Complete()` flushes the tail — the decoder calls it strictly in chain order at the end of every `Scan` (filter → scanner → processor), because the final flush is what triggers late rebinding (§9).
+- Delivery has two modes: byte mode (`Emit`) and **packet mode** (`EmitPacket`) — packets are never split across delivery boundaries; a batch of packets is handed over when its total size reaches the buffer size.
 
-1. Recognition only by an exact hash: garbage/forgeries do not enter the slots.
-2. The step-1 rule on failure + the exhaustive re-pass: correct packets are not lost to garbage and desynchronization.
-3. A sector-before-header is picked up by the rebinding; confirmations are not doubled (the delivery boundary).
-4. I/O errors are not lost (`Error`/`Completion`).
-5. Slot state is read thread-safely concurrently with reception.
+## 7. The Base64 filter (txt mode)
 
-Limits: scanner memory grows linearly with the input (the whole stream is retained — the price of rebinding); the cost of one spoiled Base64 character is up to ~99 window shifts; rebinding covers only the data retained during the decoder's current lifetime. Under VirtualIndex, receiving a foreign B packet costs up to 512 hashes (≈0.24 ms per thread, divided by the parallel scan) instead of one — the mode's price; classic sectors and Classic slots do not pay it.
+`ByteRangeFilter.CreateBase64()` builds a 256-entry accept map from five ranges: `A–Z`, `a–z`, `0–9`, `+`, `/`. Everything else — newlines, spaces, quotes, emojis, "-----BEGIN-----" decorations, and `=` padding characters — is dropped before scanning. The surviving stream is pure Base64 material, and the scanner looks for 100-character windows that decode into exactly 75 bytes.
+
+In binary mode the filter is excluded from the chain entirely.
+
+## 8. The sliding-window scanner
+
+`SlidingWindowScanner` is the damage-tolerant core of reception. It owns:
+
+- a **window** of fixed size (100 for txt, 75 for binary);
+- the **retained stream** — every byte ever passed through it (this is what makes late rebinding possible);
+- `_scanPos` — how far the forward pass has consumed.
+
+The forward pass works per position:
+
+1. copy the window from the retained stream at `_scanPos`;
+2. call the handler (§8.1);
+3. on recognition, emit the packet and jump by the handler's advance (normally the window size); otherwise slide **one byte**.
+
+The one-byte slide is what survives truncations, deletions and inserted garbage: any intact packet anywhere in the stream is found regardless of alignment. The jump on success is a heuristic acceleration: on a damaged stream it can skip the beginning of a packet overlapping the recognized one — which is exactly why the exhaustive rescan pass exists (§8.2).
+
+### 8.1 The window handler contract
+
+```csharp
+public delegate int WindowHandler(ReadOnlySpan<byte> window, out byte[]? emitted);
+```
+
+Returns the stream advance in bytes (≥ 1) and, on recognition, a copy of the packet. The window is valid only inside the call. The decoder's handlers:
+
+| Handler | Window | Logic | Advance |
+|---|---|---|---|
+| `TxtWindow` | 100 chars | decode to 75 bytes (`Convert.TryFromBase64Chars`, exactly 75 written), then `_processor.Recognizes` | 100 on success, else 1 |
+| `BinWindow` | 75 bytes | `_processor.Recognizes` directly | 75 on success, else 1 |
+
+`Recognizes` accepts a packet when it passes an autonomous check (header by `H5`, signature by `S2`) or matches a sector of at least one existing slot (classic range + hash, or the VirtualIndex sweep). Final classification — header copy, signature, which slot gets the sector — is the processor's business (§10).
+
+### 8.2 Rescan: the exhaustive safety net
+
+`RequestRescan(handler)` runs a **second, exhaustive pass** over the region the forward pass has already visited — the window is tested at *every* position, no jumps. Two rules make it correct:
+
+- The **bound** is the scanned extent at the moment of the request (all visited windows, including the last one's overhang), not the delivery position: windows beyond the forward pass will be visited by it anyway — now with the new knowledge.
+- A request arriving mid-scan is **queued** and drained when the current pass finishes; requests to an idle scanner run immediately.
+
+Re-emitting an already-accepted packet is harmless by design: the slot just increments the confirmation counter (§10), it never duplicates a version.
+
+## 9. Late headers: address rebinding
+
+A sector may be scanned *before* its header arrives (reordered stream, headers placed at the end). The scanner could not classify it then — no `H5` existed to seed the check. The pipeline closes this gap with the retained stream:
+
+1. The processor accepts a **new** header and raises `HeaderAccepted(header, headerHash)`.
+2. The decoder requests a rescan on **both** scanners (txt and binary) with a `RebindWindow` handler bound to the new `H5` and `T`.
+3. `RebindWindow` decodes (txt) or copies (binary) the window, then accepts the packet if it is a **classic sector of that specific header** (index in range + `D3` hash under the new `H5`) or — with the VirtualIndex scheme enabled and `T` within the limit — a virtual-index sector (sweep from zero: retained data is in stream order).
+4. If the rescan targets the scanner of the *other* format (e.g. the header arrived in a txt `Scan`, but a binary scanner holds retained data), the processor is temporarily attached to that scanner for the rescan and re-attached to the active one afterwards; binary and txt `Scan` calls never run concurrently on one decoder.
+
+The rescan only checks sectors against *this* header, so other slots' confirmations are untouched. This is also why consumers that rely on completeness must let the chain's final `Complete()` run — the decoder does it at the end of every `Scan`.
+
+## 10. The reception processor boundary
+
+`StreamProcessor` (detailed in the [AssemblyGuide](AssemblyGuide.en.md)) is where packets land:
+
+- **Header packets** — autonomous `H5` check; byte-identical content increments the slot's copy counter; new content creates a slot (and fires `HeaderAccepted`).
+- **Signature packets** — autonomous `S2` check; copies counted always; unique `S1` values collected in `Auto`/`Force` modes.
+- **Sector packets** — offered to every slot; each slot's `H5` decides membership, which is what keeps files in one stream from mixing.
+
+The decoder exposes the state read-only: `Slots`, `FileCount`, `SignatureMode`, `SignaturePacketCount`, `SignatureCheckActive`, `AcceptedSignatures`, and per-slot observables (validity map, collision map, coverage — see §13).
+
+## 11. Assembling files
+
+`StreamDecoder.TryAssemble(HeaderContent)` serializes the header, byte-matches it against slots, and delegates to the slot's assembly with the decoder's RS adapter, progress, cancellation token, and — when the extended check is active — the collected unique signatures:
+
+| Outcome | Meaning |
+|---|---|
+| non-null bytes | File reconstructed and verified (Exact SHA-256, plus Any SHA-512 when active). |
+| `null` | Damage exceeded redundancy or limits. |
+| `SignatureVerificationException` | SHA-256-exact content was found but no accepted signature confirms it — an integrity alarm, not a decoding failure ([AssemblyGuide §13.3](AssemblyGuide.en.md)). |
+
+The facade wraps this conveniently:
+
+| Facade operation | Behavior |
+|---|---|
+| `Scan` / `ScanText` | Cumulative feeding (no reset). |
+| `Decode(stream, format)` / `DecodeText(lines)` | One-shot: clears, scans, returns the first file's content (or `null`). |
+| `DecodeAll(stream, format)` / `DecodeAll(progress, ct)` | One-shot / cumulative respectively; returns `List<DecodeResult>`. |
+| `DecodeResult` | `(ReceptionSlot Slot, byte[]? Content)` — full reception detail plus content or `null`. |
+
+Slots are assembled in descending order of `ReceivedSectorCount` (the best-covered file first), so `Decode`'s "first" is the most complete candidate.
+
+## 12. Progress, cancellation, errors
+
+- **Phases.** Before the first header: "Searching for headers"; afterwards: "Searching for sectors"; at the end: "Done" (100 %). Assembly phases (RS recovery, exhaustive search, rotation, subset search, "Assembly finished") come from the slot and share the same 0..100 scale.
+- **Percentage.** Share of consumed source bytes (`ConsumedAdvanced` events of the scanner over the total, when known — seekable streams and arrays; otherwise percent-less phase messages).
+- **Cancellation.** The token is checked at `Scan` entry, on every progress callback, while waiting for the pipeline (`Completion.Wait(ct)`), and throughout assembly. Cancellation leaves prior reception intact — a later `Scan` can continue the same stream.
+- **Errors.** Source I/O failures fail `Completion` (observed as exceptions from `Scan`); the `Error` property carries the cause.
+
+## 13. Reports
+
+`CodecReport` writes a human-readable `.report.txt` next to the output (path = output + `.report.txt`), localized through `CodecStrings.Language`. The decoding report shows the summary (name, size, SHA-256 — recomputed from the assembled content when available — header/signature counts, `N`/`M`, total/present/missing, coverage) and a row-wise validity map, 64 sectors per row:
+
+```text
+         ════════════════════════════════════════════════════════════════
+         DataShield : Decoding report
+         ════════════════════════════════════════════════════════════════
+         File name  : REPORT.BIN
+         Size       : 640 bytes
+         SHA-256    : 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+         Headers    : 3
+         Signatures : 3
+         N (data)   : 10
+         M (ECC)    : 1
+         Total      : 11
+         Present    : 10
+         Missing    : 1
+         Coverage   : 90.91%
+         ────────────────────────────────────────────────────────────────
+         Legend: '█' — intact, '▓' — collision, '░' — corrupted/missing
+         ────────────────────────────────────────────────────────────────
+
+      0 │█████░█████──────────────────────────────────────────────────│ 10/11
+```
+
+Details worth knowing:
+
+- When the extended check is active and content was assembled, the SHA-512 is printed on two aligned lines under the SHA-256.
+- Under a hashing secret, "on the wire" hash values are keyed and unfit for display: the report recomputes real hashes from the assembled content in RAM; where only a wire value is available (assembly failed), the line is marked with a trailing `*`.
+- `CodecReport.WriteSha256Sidecar(path)` writes a `sha256sum`-compatible `<stream>.sha256` sidecar next to a restored stream file.
+
+## 14. State, thread safety, hygiene
+
+| Concern | Behavior |
+|---|---|
+| Concurrency | All decoder operations serialize on an internal gate; the RS adapter is stateless and inherently parallel-safe. |
+| Retention | The scanner retains the **entire** fed stream (that is what rebinding needs); the processor retains accepted packets. Budget `O(stream)` memory for reception. |
+| `Clear()` | Wipes slots and scanner tails; the decoder keeps its configuration and can receive again. |
+| `Dispose()` | Detaches the pipeline, wipes everything; further operations throw `ObjectDisposedException`. |
+| Self-test | SHA-256/SHA-512 implementations are verified before every operation. |
+
+## 15. Cost model
+
+| Operation | Cost |
+|---|---|
+| Filter pass | O(n) byte tests |
+| txt scan, garbage region | one Base64 decode attempt per byte position (decode fails fast on non-alphabet input — in practice the filter already removed it, so failures are mostly alignment misses) |
+| txt scan, valid packet | 1 decode + classification hashes, jump 100 |
+| binary scan | classification hashes per position; jump 75 on hit |
+| Rescan per new header | one exhaustive pass over the scanned extent (classic: 1 hash per window; VirtualIndex: sweep cost per window) |
+| Retained memory | one byte per input byte, per scanner used |
+| Assembly | see the [AssemblyGuide](AssemblyGuide.en.md) cost table |
+
+## 16. Document map
+
+| Document | Content |
+|---|---|
+| [AlgorithmGuide](AlgorithmGuide.en.md) | Wire format and algorithms; packet verification rules. |
+| [EncoderGuide](EncoderGuide.en.md) | Producing streams the decoder eats. |
+| [DecoderGuide](DecoderGuide.en.md) (this file) | Reception pipeline, scanning, rebinding, assembly entry, reports. |
+| [AssemblyGuide](AssemblyGuide.en.md) | Slot internals, version search, subset planning, limits. |
+| [CollisionBench](CollisionBench.en.md) | Measured false-accept behavior of sector verification. |
+| [DeveloperGuide](DeveloperGuide.en.md) | Project layout, build, tests. |
+| [UserGuide](UserGuide.en.md) | End-to-end usage from the console application and the GUI. |
+
+Russian mirrors of every document carry the `ru` suffix (`DecoderGuide.ru.md`, …).

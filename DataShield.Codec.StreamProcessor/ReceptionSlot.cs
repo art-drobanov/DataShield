@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Diagnostics;
 using DataShield.Codec.Ecc;
 using DataShield.Codec.Packets;
@@ -32,6 +32,9 @@ public sealed class ReceptionSlot
 
     // Настройки поиска версий (лимиты перебора, эвристики, стадии 3)
     private readonly SectorVersionSearchOptions _searchOptions;
+
+    // Последняя сборка прошла Exact(SHA-256), но не подтверждена Any(SHA-512)
+    private bool _signatureRejected;
 
     /// <summary>Заголовок файла, по которому создан слот.</summary>
     public HeaderContent Header { get; }
@@ -317,25 +320,37 @@ public sealed class ReceptionSlot
 
     // ── Сборка файла с обходом коллизий ─────────────────────────────────────
 
+    /// <summary>Собрать файл без прогресса и расширенной проверки.</summary>
+    public byte[]? TryAssemble(RsCodecAdapter? rs = null) =>
+        TryAssemble(rs, progress: null, default);
+
     /// <summary>
     /// Собрать файл из наиболее подтверждённых версий секторов.
     /// При коллизиях (равновероятные версии) выполняется поиск: полный
     /// перебор или эвристическая прокрутка (см. <see cref="SectorVersionSearchOptions"/>).
     /// </summary>
     /// <returns>Содержимое файла при успехе, иначе null.</returns>
-    public byte[]? TryAssemble(RsCodecAdapter? rs = null) =>
-        TryAssemble(rs, progress: null, default);
-
-    /// <inheritdoc cref="TryAssemble(RsCodecAdapter?)"/>
     /// <param name="rs">RS-адаптер для восстановления пропущенных томов (может быть null).</param>
     /// <param name="progress">Приёмник прогресса (глобальная шкала 0..100).</param>
     /// <param name="ct">Токен отмены.</param>
+    /// <param name="acceptedSignatures">
+    /// Уникальные сигнатуры SHA-512 из принятых сигнатурных пакетов; не
+    /// null — активна расширенная проверка Exact(SHA-256) &amp; Any(SHA-512):
+    /// после базового SHA-256 файл должен быть подтверждён хотя бы одной
+    /// сигнатурой из набора. null — проверка отключена.
+    /// </param>
+    /// <exception cref="SignatureVerificationException">
+    /// Сборка прошла базовую проверку SHA-256, но не подтверждена ни одной
+    /// сигнатурой SHA-512 (иначе отказ сборки выражается возвратом null).
+    /// </exception>
     public byte[]? TryAssemble(
         RsCodecAdapter? rs,
         IProgress<CodecProgress>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyList<byte[]>? acceptedSignatures = null)
     {
         ct.ThrowIfCancellationRequested();
+        _signatureRejected = false;
 
         var selected = BuildPreferredSelection();
         var choicePoints = BuildChoicePoints();
@@ -352,7 +367,8 @@ public sealed class ReceptionSlot
                 selected,
                 rs,
                 progress,
-                ct);
+                ct,
+                acceptedSignatures);
         }
         else
         {
@@ -376,7 +392,8 @@ public sealed class ReceptionSlot
                 selected,
                 rs,
                 progress: null,
-                ct);
+                ct,
+                acceptedSignatures);
 
             var firstAttemptTicks = Math.Max(
                 1,
@@ -407,13 +424,15 @@ public sealed class ReceptionSlot
                         rs,
                         progress,
                         ct,
-                        timer)
+                        timer,
+                        acceptedSignatures)
                     : TryRotationSearch(
                         choicePoints,
                         rs,
                         progress,
                         ct,
-                        timer);
+                        timer,
+                        acceptedSignatures);
             }
         }
 
@@ -424,12 +443,16 @@ public sealed class ReceptionSlot
          * RS по оставшимся (арбитр — финальный SHA-256).
          */
         if (result is null)
-            result = TryVolumeSubsetSearch(rs, progress, ct);
+            result = TryVolumeSubsetSearch(rs, progress, ct, acceptedSignatures);
 
         if (result is not null)
         {
             progress?.Report(
                 CodecProgress.Create(100, CodecStrings.AssemblyFinished));
+        }
+        else if (_signatureRejected)
+        {
+            throw new SignatureVerificationException();
         }
 
         return result;
@@ -446,7 +469,8 @@ public sealed class ReceptionSlot
         RsCodecAdapter? rs,
         IProgress<CodecProgress>? progress,
         CancellationToken ct,
-        Stopwatch timer)
+        Stopwatch timer,
+        IReadOnlyList<byte[]>? acceptedSignatures = null)
     {
         var indexes = new int[choicePoints.Count];
         var moduli = TiedCounts(choicePoints);
@@ -477,7 +501,8 @@ public sealed class ReceptionSlot
                 selected,
                 rs,
                 progress: null,
-                ct);
+                ct,
+                acceptedSignatures);
 
             ReportSearchProgress(
                 progress,
@@ -508,7 +533,8 @@ public sealed class ReceptionSlot
         RsCodecAdapter? rs,
         IProgress<CodecProgress>? progress,
         CancellationToken ct,
-        Stopwatch timer)
+        Stopwatch timer,
+        IReadOnlyList<byte[]>? acceptedSignatures = null)
     {
         /*
          * Через НОК определяем количество уникальных состояний синхронной
@@ -547,7 +573,8 @@ public sealed class ReceptionSlot
                 selected,
                 rs,
                 progress: null,
-                ct);
+                ct,
+                acceptedSignatures);
 
             ReportSearchProgress(
                 progress,
@@ -582,7 +609,8 @@ public sealed class ReceptionSlot
     private byte[]? TryVolumeSubsetSearch(
         RsCodecAdapter? rs,
         IProgress<CodecProgress>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyList<byte[]>? acceptedSignatures = null)
     {
         if (rs is null || Header.EccCount == 0)
             return null;
@@ -632,7 +660,8 @@ public sealed class ReceptionSlot
                 selected,
                 progress: null,
                 ct,
-                exclusions);
+                exclusions,
+                acceptedSignatures);
 
             ReportSearchProgress(
                 progress,
@@ -835,9 +864,10 @@ public sealed class ReceptionSlot
         byte[][] selected,
         RsCodecAdapter? rs,
         IProgress<CodecProgress>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyList<byte[]>? acceptedSignatures = null)
     {
-        var direct = TryAssembleDirect(selected);
+        var direct = TryAssembleDirect(selected, acceptedSignatures);
 
         if (direct is not null)
             return direct;
@@ -849,7 +879,8 @@ public sealed class ReceptionSlot
             rs,
             selected,
             progress,
-            ct);
+            ct,
+            acceptedSignatures: acceptedSignatures);
     }
 
     /// <summary>Прямая сборка без ECC: все N data-тома должны быть приняты.</summary>
@@ -858,9 +889,12 @@ public sealed class ReceptionSlot
 
     /// <summary>
     /// Собрать буфер из выбранных data-томов (все N должны быть приняты),
-    /// обрезать до FileSize и проверить SHA-256.
+    /// обрезать до FileSize и проверить SHA-256 (и SHA-512 при активной
+    /// расширенной проверке).
     /// </summary>
-    private byte[]? TryAssembleDirect(byte[][] selected)
+    private byte[]? TryAssembleDirect(
+        byte[][] selected,
+        IReadOnlyList<byte[]>? acceptedSignatures = null)
     {
         var n = DataVolumeCount;
 
@@ -879,7 +913,7 @@ public sealed class ReceptionSlot
             offset += PacketFormat.PayloadSize;
         }
 
-        return TrimAndVerify(buffer);
+        return TrimAndVerify(buffer, acceptedSignatures);
     }
 
     /// <summary>Сборка с RS-восстановлением пропущенных data-томов.</summary>
@@ -910,7 +944,8 @@ public sealed class ReceptionSlot
         byte[][] selected,
         IProgress<CodecProgress>? progress,
         CancellationToken ct,
-        int[]? forcedErasure = null)
+        int[]? forcedErasure = null,
+        IReadOnlyList<byte[]>? acceptedSignatures = null)
     {
         if (Header.EccCount == 0)
             return null;
@@ -993,31 +1028,76 @@ public sealed class ReceptionSlot
             offset += PacketFormat.PayloadSize;
         }
 
-        return TrimAndVerify(buffer);
+        return TrimAndVerify(buffer, acceptedSignatures);
     }
 
     /// <summary>
-    /// Обрезать буфер до размера файла и проверить SHA-256.
-    /// При несовпадении хеша буферы очищаются, возвращается null.
+    /// Обрезать буфер до размера файла и выполнить финальную проверку:
+    /// базовый SHA-256 (Exact), затем при активной расширенной проверке —
+    /// подтверждение SHA-512 хотя бы одной принятой сигнатурой (Any).
+    /// При несовпадении буферы очищаются, возвращается null; отказ Any
+    /// дополнительно помечается флагом (см. TryAssemble →
+    /// <see cref="SignatureVerificationException"/>).
     /// </summary>
-    private byte[]? TrimAndVerify(byte[] buffer)
+    /// <param name="buffer">Собранный буфер N·64 байт.</param>
+    /// <param name="acceptedSignatures">
+    /// Уникальные сигнатуры SHA-512; не null — расширенная проверка активна.
+    /// </param>
+    private byte[]? TrimAndVerify(
+        byte[] buffer,
+        IReadOnlyList<byte[]>? acceptedSignatures = null)
     {
         var result = buffer.Length == (int)Header.FileSize
             ? buffer
             : buffer.AsSpan(0, (int)Header.FileSize).ToArray();
 
-        var hash = Sha256Compact.HashData(result);
+        var hash = Sha256Secure.HashData(result);
 
         if (!hash.AsSpan().SequenceEqual(Header.Sha256))
         {
-            Array.Clear(buffer);
+            Wipe(buffer, result);
+            return null;
+        }
 
-            if (!ReferenceEquals(result, buffer))
-                Array.Clear(result);
-
+        // Exact(SHA-256) пройден: расширенная проверка Any(SHA-512)
+        if (acceptedSignatures is not null &&
+            !ConfirmedByAnySignature(result, acceptedSignatures))
+        {
+            _signatureRejected = true;
+            Wipe(buffer, result);
             return null;
         }
 
         return result;
+    }
+
+    // SHA-512 содержимого (значение «на проводе», Sha256Secure-аналог для
+    // 512 бит) совпадает хотя бы с одной принятой сигнатурой.
+    private static bool ConfirmedByAnySignature(
+        byte[] result,
+        IReadOnlyList<byte[]> acceptedSignatures)
+    {
+        Span<byte> hash = stackalloc byte[PacketFormat.SignatureSize];
+        Sha512Secure.HashData(result, hash);
+
+        foreach (var signature in acceptedSignatures)
+        {
+            if (signature.Length == PacketFormat.SignatureSize &&
+                hash.SequenceEqual(signature))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Вайп рабочих буферов неудачной попытки.
+    private static void Wipe(byte[] buffer, byte[] result)
+    {
+        Array.Clear(buffer);
+
+        if (!ReferenceEquals(result, buffer))
+            Array.Clear(result);
     }
 }

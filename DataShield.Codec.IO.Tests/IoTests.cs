@@ -1,4 +1,4 @@
-using DataShield.Codec.IO;
+﻿using DataShield.Codec.IO;
 using DataShield.Interfaces;
 
 namespace DataShield.Codec.IO.Tests;

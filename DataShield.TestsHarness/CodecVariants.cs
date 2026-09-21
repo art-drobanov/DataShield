@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using DataShield.Codec;
 using DataShield.Codec.Packets;
@@ -21,20 +21,31 @@ public static class CodecVariants
     /// <summary>
     /// Создать случайную реализацию контракта IDataShieldCodec:
     /// библиотечную DataShieldCodec (A) либо консольную DataShieldConsole (C,
-    /// quiet — стенд рисует собственную таблицу). Экземпляр освобождается
-    /// вызывающим кодом через IDisposable.
+    /// quiet — стенд рисует собственную таблицу). Хвостовые параметры —
+    /// сигнатурные пакеты SHA-512, режим проверки сигнатур и секрет
+    /// скремблирования; по умолчанию поведение прежнее. Экземпляр
+    /// освобождается вызывающим кодом через IDisposable.
     /// </summary>
     public static (IDataShieldCodec Codec, char Tag) CreateCodec(
         int eccPercent, int headerPercent, SectorScheme scheme,
-        int virtualIndexSectorLimit, Random rng) =>
+        int virtualIndexSectorLimit, Random rng,
+        bool signaturePackets512 = false,
+        SignatureMode signatureMode = SignatureMode.Auto,
+        string? hashSecret = null) =>
         rng.Next(2) == 0
             ? (new DataShieldCodec(
-                    eccPercent, headerPercent, scheme, virtualIndexSectorLimit),
+                    eccPercent, headerPercent, scheme, virtualIndexSectorLimit,
+                    signaturePackets512: signaturePackets512,
+                    signatureMode: signatureMode,
+                    hashSecret: hashSecret),
                 'A')
             : (new DataShieldConsole(
                     quiet: true, eccPercent: eccPercent,
                     headerPercent: headerPercent, sectorScheme: scheme,
-                    virtualIndexSectorLimit: virtualIndexSectorLimit),
+                    virtualIndexSectorLimit: virtualIndexSectorLimit,
+                    signaturePackets512: signaturePackets512,
+                    signatureMode: signatureMode,
+                    hashSecret: hashSecret),
                 'C');
 
     // ── Вариативное кодирование: каждая операция выбирает случайную

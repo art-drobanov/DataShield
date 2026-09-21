@@ -1,4 +1,4 @@
-using DataShield.Codec.StreamProcessor.Versions;
+﻿using DataShield.Codec.StreamProcessor.Versions;
 using Xunit;
 
 namespace DataShield.Codec.StreamProcessor.Tests;

@@ -1,141 +1,175 @@
-# Архитектура DataShield — инженерный разбор
+# DataShield Alpha-XVI — Руководство разработчика
 
-Инженерный разбор решения DataShield: карта проектов, контракт конвейера, логика каждого модуля, модель выполнения и потокобезопасность, тесты, сборка. Без формализмов ради формализмов — короче записи, больше «почему сделано именно так» и «на что смотреть при изменениях». Алгоритмы (накопление, перепривязка, сборка) детально разобраны в `AlgorithmGuide.ru.md`; здесь — архитектура и модули.
+Структура репозитория, граф проектов, сборка, тестовый набор, вендоренные референсы и точки расширения.
 
-## 1. Обзор решения
+| | |
+|---|---|
+| Проект | DataShield Alpha-XVI |
+| Документ | `docs/DeveloperGuide.ru.md` (русский); английское зеркало: `docs/DeveloperGuide.en.md` |
+| Аудитория | Контрибьюторы кодовой базы; инженеры, портирующие кодек (например, на C++); сопровождающие CI/CD, собирающие или упаковывающие решение |
+| Охват | Структура решения и граф зависимостей, пиннированные референсы `refs-src`, команды сборки, офлайн-режим NuGet, тестовый набор и движок повреждений, стенды/бенчмарки, кодовые конвенции, точки расширения, версионирование |
+| Вне охвата | Алгоритмы ([AlgorithmGuide](AlgorithmGuide.ru.md)), использование ([UserGuide](UserGuide.ru.md)), API кодека ([EncoderGuide](EncoderGuide.ru.md), [DecoderGuide](DecoderGuide.ru.md), [AssemblyGuide](AssemblyGuide.ru.md)) |
 
-`DataShield.slnx` содержит 28 проектов (19 продуктовых и 9 тестовых). Конвейер декодирования собран из небольших сборок, каждая решает одну задачу:
+## 1. Соглашения, используемые в документе
 
-| Проект                             | Назначение и логика                                                                                                                                                                                                   |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DataShield.Interfaces`            | Контракт конвейера: `IDataSource`, `IDataProcessor`, `IDataWriter`, база `DataProcessorBase`, делегаты `DataReadyHandler`, `TakeBufferDelegate`                                                                       |
-| `DataShield.Codec.Packets`         | Формат провода: константы `PacketFormat` (75 Б/100 символов, раскладки H/D), сериализация заголовка `HeaderContent`, схема секторов `SectorScheme` (Classic/VirtualIndex) и `VirtualIndexHasher` (Trunc11, потолок 512) |
-| `DataShield.Codec.IO`              | Источники: `FileSource`, `StreamSource`, `ByteArraySource` (наследники `BufferedSourceBase`); приёмники: `FileDataWriter`, `StreamDataWriter`, `ByteListWriter`, `PreallocatedBufferWriter` (наследники `WriterBase`) |
-| `DataShield.Codec.StreamFilter`    | `ByteRangeFilter` — фильтр байтов по карте `bool[256]` из `ByteRange`; фабрика `CreateBase64()`                                                                                                                       |
-| `DataShield.Codec.StreamScanner`   | `SlidingWindowScanner` — сканирование скользящим окном с делегатом `WindowHandler`; удержание всего потока; очередь отложенных rescan                                                                                 |
-| `DataShield.Codec.Reporting`       | Общие сервисы: локализация `CodecStrings`/`CodecLanguage`, прогресс `CodecProgress`/`ScaledProgress`/`ProgressThrottle`                                                                                                |
-| `DataShield.Codec.Ecc`             | RS-адаптер `RsCodecAdapter`: кодирование K→M и восстановление стираний над GF(2^16) (справочники из `refs-src`)                                                                                                        |
-| `DataShield.Codec.StreamProcessor` | Ядро приёма: накопитель `StreamProcessor`, слот `ReceptionSlot` (включая курсор прихода VirtualIndex), комбинаторика `Versions/*`                                                                                      |
-| `DataShield.Codec`                 | Фасад: `FileEncoder`, `FileDecoder`, статистика `EncodeStats`, вывод `Packets/PacketIO`, `OutputFormat(Config)`                                                                                                       |
-| `DataShield.GUI`                   | Avalonia UI (MVVM): `MainViewModel`, `MainWindow.axaml`, `SectorMapControl`, локализация `UiStrings`/`LanguageManager`, настройки `AppSettings`                                                                       |
-| `DataShield.Console`                | Консольная версия (библиотека): `ConsoleApp` — команды help/encode/decode, разбор опций (`--format/--ecc/--header/--scheme/--output/--quiet/--all/--use-name`, длинные/короткие формы, `--key=value`); `DataShieldConsole` — реализация `IDataShieldCodec` с прогрессом в консоль; локализация через `IConsoleStrings`; коды возврата 0/1/2/130 |
-| `DataShield.Console.EN` / `.RU`     | Локализованные Exe-обёртки: `new ConsoleApp(EnStrings/RuStrings.Instance).Run(args)` с передачей кода возврата |
-| `DataShield.Console.Demo`           | Стенд контракта CLI: в бесконечном цикле порождает EN/RU-консоли как дочерние процессы и проверяет справку, коды возврата, локализованные ошибки, побитовые roundtrip, повреждённые и многофайловые потоки, обе схемы секторов |
-| `DataShield.Demo`                  | Непрерывный рандомизированный стенд стабильности/производительности (PASS/WARN/FAIL)                                                                                                                                  |
-| `DataShield.CollisionBench`        | Консольный стенд коллизионной стойкости двух схем секторов: selftest/collide/full/perf; документация — `CollisionBench.*.md`                                                                         |
-| `DataShield.Tests`                 | Интеграционные тесты кодека (185)                    |
-| `DataShield.TestsHarness`          | Источники повреждений для тестов и стендов (Demo, Console.Demo, Tests): `DamageEngine`, `BinaryDamage`, `PacketDamage`, `LineDamage`, `DamageBits`, `PacketProbe`, `RandomInput`                                                                   |
-| `RsRaid16Demo`                     | Демонстрация и тесты поля GF(2^16)/Рида–Соломона                                                                                                                                                                      |
-| `Sha256CompactDemo`                | Демонстрация компактной реализации SHA-256                                                                                                                                                                            |
-| `DataShield.*.Tests` × 8           | Юнит-тесты по сборке на каждый модуль конвейера (см. раздел 8)                                                                                                                                                        |
+- «Решение» — `DataShield.slnx` в корне репозитория (XML-формат решения); все 28 проектов собираются под **net10.0**.
+- `refs-src` — каталог пиннированных эталонных исходников (§4).
+- Версия продукта на момент написания: **3.0** (`AssemblyVersion 3.0.0.0`).
 
-Каталог **`refs-src/`** — немодифицируемые справочные исходники `RsRaid16.cs`, `GF16.cs`, `Sha256Compact.cs`; они подключаются компиляцией в проекты, которым нужны RS/SHA. Правки справочников не допускаются: проверенная математика должна оставаться побитово неизменной.
+## 2. Структура репозитория
 
-Документация (`docs/`): справочники `AlgorithmGuide` (алгоритмы) и `DeveloperGuide` (архитектура) и документы `EncoderGuide`/`DecoderGuide`/`AssemblyGuide`/`CollisionBench` (каждый — в версиях ru и en); `UserGuide` для конечного пользователя.
+| Путь | Содержимое |
+|---|---|
+| `DataShield.slnx` | Решение; папки `/Demo/` и `/Tests/` группируют не поставляемые проекты. |
+| `DataShield.*/` (прод) | 9 библиотек + 4 приложения — см. §3. |
+| `DataShield.*.Tests/`, `DataShield.TestsHarness/` | Тестовые проекты и общая библиотека симуляции повреждений (§6). |
+| `DataShield.CollisionBench/`, `DataShield.Demo/`, `DataShield.Console.Demo/`, `RsRaid16Demo/`, `ShaCompactDemo/` | Стенды и бенчмарки (§7). |
+| `refs-src/` | Пиннированные эталонные реализации с сайдкарами `.sha256` (§4). |
+| `docs/` | Этот набор документации. |
+| `nuget.config`, `packages/`, `switch_to_local_packages.cmd`, `switch_to_online_packages.cmd`, `download_local_packages.cmd` | Конфигурация NuGet и офлайн-режим (§5). |
+| `clean.cmd` | Удаляет `bin/`, `obj/`, `.vs/`, журналы и переходные артефакты. |
+| `LICENSE` | Текст Apache License 2.0 (метаданные проектов декларируют `MIT` как выражение лицензии пакета). |
+| `timestamp.txt` | Локальная учётная запись сборки. |
 
-Граф зависимостей (упрощённо):
+## 3. Граф проектов
 
-```
-Interfaces ◄─ Codec.IO ◄────────┐
-Interfaces ◄─ StreamFilter ◄────┤
-Interfaces ◄─ StreamScanner ◄───┼─► Codec ◄─ GUI, Console(.EN/.RU), Demo, Console.Demo, Tests
-Interfaces ◄─ StreamProcessor ◄─┤ (TestsHarness ◄─ Demo, Console.Demo, Tests)
-Codec.Packets ◄─────────────────┘
-```
+### 3.1 Продовые библиотеки
 
-**Важно про namespace:** типы сборки `DataShield.Codec.StreamProcessor` живут в namespace `DataShield.Codec` / `DataShield.Codec.Versions` — фасадные namespace сохранены при декомпозиции монолита. Пространство имён ≠ имя сборки; ищите тип по namespace, а не по проекту.
+| Проект | Зависимости | Содержимое |
+|---|---|---|
+| `DataShield.Interfaces` | — | Контракты конвейера: `IDataSource`, `IDataProcessor`, `DataProcessorBase`, `DataReadyHandler`, плюс `BuildInfo`. |
+| `DataShield.Codec.Reporting` | — | `CodecProgress` и `CodecStrings` — локализованные имена фаз и метки отчётов (английский/русский). |
+| `DataShield.Codec.Packets` | Reporting | Формат на проводе: `PacketFormat`, `HeaderContent`, `PacketHasher`, `SignaturePacket`, `SignatureMode`, `SectorScheme`, `FileNameCodec`, `VirtualIndexHasher`; линкует вендоренные реализации SHA. |
+| `DataShield.Codec.Ecc` | Reporting | `RsCodecAdapter` — кодирование стираний Рида—Соломона над GF(2¹⁶); линкует вендоренные `GF16` + `RsRaid16`. |
+| `DataShield.Codec.IO` | Interfaces | Источники (`ByteArraySource`, `StreamSource`, `FileSource`) и писатели (`ByteListWriter`, `StreamDataWriter`, `FileDataWriter`, `PreallocatedBufferWriter`). |
+| `DataShield.Codec.StreamFilter` | Interfaces, Reporting | `ByteRangeFilter` — фильтр мусора Base64. |
+| `DataShield.Codec.StreamScanner` | Interfaces | `SlidingWindowScanner`, `WindowHandler`. |
+| `DataShield.Codec.StreamProcessor` | Interfaces, Packets, Reporting, Ecc | `StreamProcessor`, `ReceptionSlot`, машинерия сборки `Versions/` и `Subsets/`; линкует вендоренный `Mt19937`. |
+| `DataShield.Codec` | всё выше | Сборка-фасад: `StreamEncoder`, `StreamDecoder`, `StreamCodec`, `DataShieldCodec`, `PacketIO`, `CodecReport`, `EncodeStats`, `DecodeResult`, `SecretScopeGuard`. |
 
-## 2. Контракт конвейера (`DataShield.Interfaces`)
+Правило слоёв однонаправленно: формат и математика внизу (`Packets`, `Ecc`), коммуникации в середине (`IO`, `Filter`, `Scanner`, `Processor`), оркестрация наверху (`Codec`). Ничто ниже `Codec` его не референсит.
 
-Всё движение данных построено на трёх ролях:
+### 3.2 Приложения
 
-- **`IDataSource`** — источник с буферизацией и событийной выдачей. `Start()` запускает чтение в буфер `BufferSize`; заполненный буфер объявляется событием `DataReady`, чтение приостанавливается до вычитки буфера клиентом. Это естественный backpressure: источник не забегает вперёд и не копит память там, где потребитель не успевает. По EOF выбрасывается остаток и источник останавливается сам. `Stop()` — внешняя остановка; остаток буфера всё равно отдаётся.
-- **`IDataProcessor : IDataSource`** — «чёрный ящик»: вход (`Attach/Detach(IDataSource)`) и собственный выход; результат публикуется своим `DataReady`, что позволяет выстраивать цепочки любой длины. `Complete()` — сигнал конца входа: остаток выходного буфера выбрасывается, обработчик останавливается.
-- **`IDataWriter`** — тупиковый приёмник: `Write(ReadOnlySpan<byte>)`, подключение к источнику через `Attach`.
+| Проект | Тип | Содержимое |
+|---|---|---|
+| `DataShield.GUI` | WinExe | Десктопное приложение Avalonia 11.3.20 (тема Fluent, шрифты Inter): `MainWindow.axaml`, `MainViewModel`. Референсит только `DataShield.Codec`. |
+| `DataShield.Console` | библиотека | Общий консольный движок: `ConsoleApp`, `DataShieldConsole`, `ConsoleProgress`, `IConsoleStrings`. |
+| `DataShield.Console.EN` / `DataShield.Console.RU` | Exe | Тонкие точки входа (`Program.cs` + `Strings.cs`), поставляющие локализованные строки общему движку. |
 
-`DataProcessorBase` — общая реализация обработчика: подключение к upstream с каскадными `Start/Stop/Complete` (сигнал конца проходит по всей цепочке), выходной буфер `BufferSize` и два способа выдачи:
+## 4. `refs-src`: пиннированные эталонные реализации
 
-- `Emit(bytes)` — байтовый поток, буферизация допустима (склеивать/резать порции можно как угодно);
-- `EmitPacket(bytes)` — **неделимые** порции (пакеты): порезать нельзя, выдать нужно целиком. Смешение режимов — источник тонких багов, поэтому оно разведено по разным методам.
+Семь файлов живут в `refs-src/`, каждый с сайдкаром `.sha256`:
 
-Потокобезопасность обеспечивается `SyncRoot`; конвейер в целом однониточный по данным (вызовы идут по цепочке событий), поэтому синхронизация нужна только там, где внешний код читает состояние параллельно (например, `StreamProcessor`).
+| Файл | Линкуется в | Роль |
+|---|---|---|
+| `Sha256Compact.cs`, `Sha512Compact.cs` | `DataShield.Codec.Packets` | Безаллокационные чистые SHA-256/SHA-512 для каждого дайджеста «на проводе». |
+| `Sha256Secure.cs`, `Sha512Secure.cs` | `DataShield.Codec.Packets` | Секретные (ключевые) варианты: механика `AsyncLocal<SecretScope>`; пустой/отсутствующий секрет деградирует в Compact. |
+| `GF16.cs`, `RsRaid16.cs` | `DataShield.Codec.Ecc` | Арифметика GF(2¹⁶) и RS-кодек стираний. |
+| `Mt19937.cs` | `DataShield.Codec.StreamProcessor` | Мерсенн-Твистер для детерминированного перемешивания планировщика подмножеств. |
 
-## 3. `Codec.Packets` — формат провода
+Они компилируются в свои проекты ссылками `<Compile Include="..\refs-src\…">`. Заголовочный комментарий формулирует контракт прямо: *«эталонные реализации: источник для порта на C++, не редактируются»*. Сайдкары `.sha256` (а для `Mt19937` ещё и хеш-метка внутри файла) пиннят точное содержимое — случайная правка обнаружима. Если нужно иное поведение — оберните или сконфигурируйте сверху, не форкайте их на месте.
 
-`PacketFormat` — только константы (размеры, смещения полей H1–H5/D1–D3, `Base64Size = 100`, `MaxFileSizeField = 16 777 215`); константы вместо логики — чтобы раскладку нельзя было «сломать» правкой поведения. `HeaderContent` — readonly-record-структура с сериализацией в 51 байт (`ToBytes/WriteTo/ReadFrom`, UInt24LE для размера, имя с паддингом пробелами) и вычисляемыми `DataVolumeCount`/`TotalVolumeCount`. `PacketHasher` вычисляет усечённые SHA-256-хеши целостности (H5 = 24 байта над содержимым заголовка, D3 = 9 байт над H5 ‖ D1 ‖ D2). Опциональная схема секторов с виртуальным индексом: enum `SectorScheme` (Classic/VirtualIndex) и `VirtualIndexHasher` — сборка/проверка пакетов `payload(64) ‖ Trunc11(SHA-256(H5‖payload‖idxLE))` с потолком `DefaultSectorLimit = 512` и двухфазным перебором `TryVerifyPacket` (64 последовательных шага от курсора, далее `Parallel.For` блоками по 128 при остатке ≥ 256). `FileNameCodec` упаковывает имя в 14-байтное поле H1. Логики принятия решений здесь нет — модуль не зависит ни от чего, кроме BCL; любой модуль конвейера может подняться на этих типах без циркулярных ссылок.
+## 5. Сборка
 
-## 4. `Codec.IO` — источники и приёмники
+Требования: .NET SDK 10 (таргеты `net10.0`). Повседневные команды:
 
-Источники (`BufferedSourceBase`) реализуют событийную модель `IDataSource` поверх конкретного хранилища: массив (`ByteArraySource`), поток (`StreamSource`), файл (`FileSource`). Приёмники (`WriterBase`) пишут в файл/поток/список/предвыделенный буфер. Используются фасадом `FileDecoder` (вход: `ByteArraySource`, `StreamSource`) и потребителями вывода. Ничего не знают о пакетах — это честная байтовая периферия.
-
-## 5. `Codec.StreamFilter` и `Codec.StreamScanner`
-
-**`ByteRangeFilter`** — `IDataProcessor` с картой допустимых байтов `bool[256]`, построенной из набора `ByteRange`. Пропускает байты, входящие в диапазоны, остальные отбрасывает; проверка — O(1) lookup по байту, без аллокаций. `CreateBase64()` — готовый фильтр алфавита Base64 для txt-режима (переводы строк, пробелы и мусор исчезают до декодирования). В binary-режиме фильтр в цепочку не включается.
-
-**`SlidingWindowScanner`** — `IDataProcessor`, обрабатывающий вход окном фиксированной длины (100 байт для Base64, 75 для binary) с делегатом `WindowHandler(window, out emitted) → int`:
-
-- возвращённое значение — продвижение потока в байтах, минимум 1; типичный случай: успех → длина пакета, неуспех → 1. Используется только прямым проходом: повторный проход (rescan) его игнорирует и всегда сдвигается на 1 байт;
-- `emitted` — копия распознанного пакета (выдаётся через `EmitPacket`) или null.
-
-Ключевая особенность — **удержание всего потока**: сканер не выбрасывает обработанные байты, пока жив. Это цена возможности `RequestRescan(handler)` — исчерпывающего повторного прохода удержанных данных другим окном: окно проверяется на каждой позиции, продвижение делегата игнорируется (используется для адресной перепривязки секторов, опоздавших от своего заголовка; полнота обязательна, потому что прыжок прямого прохода после успеха может перепрыгнуть начало перекрывающегося валидного пакета). Очередь отложенных rescan привязана к границе последней прямой выдачи: повторный проход не заходит за неё, чтобы не подтверждать одни и те же данные дважды. Событие `ConsumedAdvanced` сообщает прогресс потребления потока.
-
-## 6. `Codec.StreamProcessor` — ядро приёма
-
-Состав: `StreamProcessor` (накопитель), `ReceptionSlot` (слот файла), `Versions/` (`SectorCombinationMath`, `SectorVersionSearchOptions`, `ChoicePoint`, `SectorVariant`, `SectorVersionInfo`). RS-адаптер (`RsCodecAdapter`) вынесен в `DataShield.Codec.Ecc`, локализация и прогресс — в `DataShield.Codec.Reporting`.
-
-Логика:
-
-- **`StreamProcessor : DataProcessorBase`** собирает из кусков входа целые 75-байтные пакеты (буфер `_pending` на границах кусков), классифицирует каждый (автономный хеш → заголовок; гибридная проверка сектора: классический хеш с сидом H5, затем при `SectorScheme.VirtualIndex` и N+M ≤ порога — перебор виртуального индекса в `SectorMatches`; сектор может подойти нескольким слотам), ведёт список `ReceptionSlot`. Конструктор принимает `sectorScheme`/`virtualIndexSectorLimit` (диапазон 1..512). Новый заголовок → новый слот + событие `HeaderAccepted(header, headerHash)` (вне блокировки — обработчик события запускает тяжёлый rescan). Свойства-снимки (`Slots`, `FileCount`, счётчики по всем слотам) читаются под блокировкой параллельно с приёмом. `Recognizes(packet)` — предикат распознавания без побочных эффектов для делегата окна сканера.
-- **`ReceptionSlot`** — `SortedDictionary<номер сектора, List<SectorVariant>>`; версии payload отсортированы по убыванию счётчика подтверждений; `AddSector` либо инкрементирует счётчик совпавшей версии (с «всплытием»), либо добавляет новую версию в конец. Для VirtualIndex хранит курсор прихода (`VirtualIndexCursor`/`AdvanceVirtualIndexCursor`) — точку старта перебора следующего сектора. Даёт метрики (coverage, карты валидности/коллизий) и сборку `TryAssemble` (прямая → RS → перебор/прокрутка комбинаций версий; подробно — `AlgorithmGuide.ru.md`, раздел 9, и `AssemblyGuide.ru.md`).
-- **`Versions`** — чистая комбинаторика: одометр `AdvanceIndexes`, `CountCombinations` (с насыщением long.MaxValue), `CountRotationStates` (НОК циклов с лимитом), `ShouldUseExhaustiveSearch`; лимиты `SectorVersionSearchOptions` (100 000 комбинаций, 100 000 состояний, 30 с). Выделение в отдельное пространство имён неслучайно: математика тестируется отдельно от приёма.
-- **`RsCodecAdapter`** — кодирование K→M и восстановление стираний для 64-байтных томов (32 независимых GF-символа на том); условие восстановления: стёртых data ≤ доступных ECC; K+M ≤ 65 535.
-
-## 7. `Codec` (фасад), `GUI`, `Console`, `Demo`
-
-**`FileEncoder`**: файл → N data-томов → M ECC-томов → пакеты секторов + H копий заголовка (первый/последний/равномерно). Параметры конструктора: `eccPercent`, `headerPercent`, `sectorScheme` (по умолчанию Classic), `virtualIndexSectorLimit` (1..512, дефолт 512); при VirtualIndex секторы собирает `BuildVirtualIndexSector`, а превышение N+M над порогом — `InvalidOperationException` без даунгрейда: молчаливая деградация схемы запрещена. Фазы прогресса 0–10–75–100, вайп промежуточных буферов. `EncodeToText` — Base64-строки; `EncodeWithStats` — + `EncodeStats` (SHA, счётчики, копии заголовков).
-
-**`FileDecoder`**: собирает конвейер `источник → (фильтр Base64) → сканер → накопитель`, поддерживает вход строк Base64, сырых байт и `Stream` с явным `OutputFormat`; параметры `sectorScheme`/`virtualIndexSectorLimit` пробрасываются в накопитель (гибридный приём Classic + VirtualIndex). По `HeaderAccepted` просит оба сканера (txt и bin) адресно перепривязать удержанные данные окном `RebindWindow` (сектор опоздавшего заголовка: диапазон номера + хеш с сидом нового H5; для VirtualIndex — та же пара проверок с перебором индекса от нулевого курсора). Сборка — `TryAssemble(HeaderContent)`: поиск слота побайтовым сравнением и вызов `ReceptionSlot.TryAssemble`. Состояние приёма доступно через `Slots`/`FileCount` для UI-индикации.
-
-**`DataShield.GUI`** — Avalonia-приложение (MVVM без внешних фреймворков): `MainViewModel` + `RelayCommand`, карта секторов `SectorMapControl`, двуязычность `UiStrings`/`LanguageManager`/`UiLanguage`, конвертеры, настройки `AppSettings`, режимы работы `WorkMode`; в опциях кодирования — чекбокс «Схема секторов с виртуальным индексом (до 512 томов)» (`UseVirtualIndexScheme`, по умолчанию снят; действует и на кодирование, и на приём). Все тяжёлые операции кодека — через фасад `DataShield.Codec`.
-
-**`DataShield.Console` (+ `Console.EN` / `Console.RU`)** — консольная версия поверх того же фасада. `ConsoleApp` разбирает команды `help`, `encode`, `decode`; опции допускают длинную/короткую форму (`--ecc 20` / `-e 20`) и запись `--key=value`: `--format text|bin`, `--ecc 0..1000` (по умолчанию 10), `--header 0..50`, `--scheme classic|virtual`, `--output`, `--quiet`; для decode — `--all` (все слоты, а не только наиболее полный) и `--use-name` (сохранить под именем из заголовка). `DataShieldConsole` реализует `IDataShieldCodec`, транслируя фазы кодека в строку прогресса. Локализованные Exe `Console.EN`/`Console.RU` отличаются только словарём строк (`Strings.cs` задаёт и `CodecStrings.Language`); вывод — UTF-8. Коды возврата: 0 — успех, 1 — ошибка, 2 — неверное использование, 130 — прерывание пользователем (Ctrl+C отменяет токен: текущая фаза завершается корректно, а не убивается).
-
-**`DataShield.Console.Demo`** — стенд контракта CLI: в бесконечном цикле порождает обе локализованные консоли как дочерние процессы со случайными файлами (1 Б–256 КБ, лог-равномерно), случайными процентами ECC/заголовков и обеими схемами секторов; проверяет справку без аргументов, коды возврата, локализованные сообщения об ошибках, побитовые roundtrip кодирование→декодирование, повреждённые и многофайловые потоки. Статусы PASS/WARN/FAIL, кольцевая таблица последних итераций со средними временами процессов.
-
-**`DataShield.Demo`** — бесконечный стенд: случайный файл (1 Б–256 КБ, лог-равномерно), ECC 1–200%, случайная маска повреждений из `DamageBits`, случайная схема секторов (~12% VirtualIndex с гейтом K ≤ 512; декодер соответствует схеме потока, смешанные multi-file потоки принимаются гибридно), матрица ожиданий PASS/WARN/FAIL, кольцевая таблица итераций со скоростями (колонка `Sch` — схема). WARN — намеренный отказ (повреждение сверх бюджета/подделка), FAIL — дефект кодека. Основной инструмент регрессии; детали легенды — в выводе самого стенда.
-
-## 8. Тесты
-
-| Сборка                                   | Покрытие                                                     | Тестов  |
-| ---------------------------------------- | ------------------------------------------------------------ | ------- |
-| `DataShield.Interfaces.Tests`            | контракт конвейера, `DataProcessorBase`                      | 6       |
-| `DataShield.Codec.Packets.Tests`         | формат пакета, сериализация заголовка, `VirtualIndexHasher`  | 70      |
-| `DataShield.Codec.IO.Tests`              | источники и приёмники                                        | 18      |
-| `DataShield.Codec.StreamFilter.Tests`    | фильтры диапазонов, Base64-фильтр                            | 8       |
-| `DataShield.Codec.StreamScanner.Tests`   | скользящее окно, удержание, исчерпывающий rescan              | 11      |
-| `DataShield.Codec.StreamProcessor.Tests` | накопитель, слоты, версии, комбинаторика, RS-адаптер, сборка, гибридный приём VirtualIndex | 222 |
-| `DataShield.Codec.Reporting.Tests`       | локализация, прогресс                                        | 3       |
-| `DataShield.Codec.Ecc.Tests`             | RS-адаптер: кодирование и восстановление                     | 20      |
-| `DataShield.Tests` (интеграционные)      | фасад кодер/декодер, повреждения, многофайловые потоки, VirtualIndex end-to-end | 185 |
-| **Всего**                                |                                                              | **543** |
-
-## 9. Сборка и запуск
-
-```powershell
-dotnet build DataShield.slnx -c Release
-dotnet test DataShield.slnx
-dotnet run --project DataShield.Demo -c Release
-dotnet run --project DataShield.GUI -c Release
-dotnet run --project DataShield.Console.RU -c Release -- encode input.doc --ecc 20
-dotnet run --project DataShield.Console.EN -c Release -- decode input.doc.DataShield.txt --all --use-name
-dotnet run --project DataShield.Console.Demo -c Release
+```text
+dotnet build DataShield.slnx                 # всё
+dotnet test DataShield.slnx                  # полный тестовый набор (§6)
+dotnet run --project DataShield.GUI
+dotnet run --project DataShield.Console.EN -- <аргументы>
+dotnet run --project DataShield.Console.RU -- <аргументы>
 ```
 
-Требуется .NET 10 SDK. GUI также собирается в self-contained publish по обычным правилам Avalonia.
+> [!NOTE]
+> Полная сборка может печатать безвредные предупреждения: **CS1668** (классическое уведомление о VC98-пути `LIB` при разрешении MSVC-тулчейна) и **AVLN3001** (замечание анализатора Avalonia). Ни то ни другое не влияет на корректность вывода.
 
-## 10. Соглашения
+Офлайн-режим NuGet (для изолированных машин): `switch_to_local_packages.cmd` переписывает `nuget.config` на использование только локального flat-фида `packages/` (оригинал бэкапится в `nuget.online.config`) и попутно синхронизирует замыкание зависимостей из машинного кеша NuGet; `download_local_packages.cmd` наполняет фид; `switch_to_online_packages.cmd` возвращает онлайн-конфигурацию (сейчас `nuget.org`). `clean.cmd` вычищает `bin`/`obj`/`.vs` и переходные файлы, когда нужен по-настоящему свежий билд.
 
-- Комментарии и XML-doc — на русском языке; публикуемые типы документируются полностью.
-- Namespace сохраняют исторические фасадные имена (`DataShield.Codec`, `DataShield.Codec.Versions`) независимо от сборки.
-- Справочники `refs-src/` не изменяются и не адаптируются.
-- Новая логика приёма/сборки покрывается тестами соответствующей `*.Tests`-сборки; изменения фасада — интеграционными тестами `DataShield.Tests`.
+## 6. Тестовый набор
+
+### 6.1 Проекты и масштаб
+
+Девять xUnit-проектов (xunit 2.9.3, `Microsoft.NET.Test.Sdk` 17.14.1, `xunit.runner.visualstudio` 3.1.4, `coverlet.collector` 6.0.4):
+
+| Проект | Методов Fact/Theory | Фокус |
+|---|---|---|
+| `DataShield.Codec.Ecc.Tests` | 14 | RS-кодирование стираний, краевые случаи геометрии. |
+| `DataShield.Codec.IO.Tests` | 18 | Источники и писатели, контракт выдачи. |
+| `DataShield.Codec.Packets.Tests` | 48 | Формат на проводе, хеши, упаковка имён, хешер VirtualIndex. |
+| `DataShield.Codec.Reporting.Tests` | 3 | Строки локализации. |
+| `DataShield.Codec.StreamFilter.Tests` | 8 | Фильтрация диапазонов байт. |
+| `DataShield.Codec.StreamScanner.Tests` | 11 | Скользящее окно, семантика повторного сканирования. |
+| `DataShield.Codec.StreamProcessor.Tests` | 95 | Слоты, версии, коллизии, планирование подмножеств, стадии сборки. |
+| `DataShield.Interfaces.Tests` | 6 | Базовые классы конвейера. |
+| `DataShield.Tests` | 145 | Сквозные: `CodecTests`, `SignatureTests`, `VirtualIndexCodecTests`, `StreamEncoderTests`, `StreamDecoderTests`, `DataShieldCodecTests`, `PacketIOTests`, `CodecReportTests`, `EncoderProgressPhasesTests`. |
+
+Итого 348 методов Fact/Theory; разворачивание теорий доводит полный прогон до 561 выполненного тест-кейса на момент написания.
+
+### 6.2 Движок повреждений (`DataShield.TestsHarness`)
+
+Сквозные тесты не кормят декодер чистыми потоками — они кормят повреждёнными, воспроизводимо. Харнесс предоставляет:
+
+| Компонент | Роль |
+|---|---|
+| `RandomInput` | Сеяное случайное содержимое файлов контролируемых размеров. |
+| `DamageBits`, `BinaryDamage`, `LineDamage`, `PacketDamage` | Примитивы порчи: битовые инверсии, побайтовая порча сырых потоков, построчная порча текста (обрезание, удаление, дублирование, перемешивание, вставка), пакетная хирургия. |
+| `PacketProbe` | Контролируемая порча одного пакета (используется, например, сценарием «порча» в CollisionBench). |
+| `DamageEngine`, `ScenarioEngine` | Композиция примитивов в сценарные прогоны с бюджетами («в бюджете ECC» против «сверх»). |
+| `CodecVariants` | Матрица конфигураций кодека (схемы, режимы сигнатур, секреты, проценты ECC/заголовков), по которой ходят сценарии. |
+
+### 6.3 Параллельность тестов
+
+`xunit.runner.json` задаёт `"parallelizeTestCollections": false`. Причина: часть кода под тестом живёт на **глобальном состоянии процесса** — `CodecStrings.Language` (локализация) и область секрета `AsyncLocal` плохо уживаются с параллельными коллекциями, ожидающими разные настройки. Тесты, меняющие язык, восстанавливают его в `finally`. Соблюдайте этот контракт при добавлении тестов.
+
+## 7. Стенды и бенчмарки (папка `/Demo/`)
+
+| Проект | Что делает непрерывно |
+|---|---|
+| `DataShield.CollisionBench` | Измерительная кампания коллизионной стойкости — режимы `selftest`/`collide`/`full`/`perf`/`all` ([руководство CollisionBench](CollisionBench.ru.md)). |
+| `DataShield.Demo` | Бесконечный стенд стабильности: случайные файлы (одиночные и мультифайловые потоки, обе схемы секторов, случайные проценты ECC, опциональные сигнатуры/секреты/режимы сигнатур), повреждения в бюджете и сверх бюджета ECC, затем проверка декодирования. PASS — побитово точное восстановление; WARN — корректный отказ (сверхповреждение, чужой секрет, force без сигнатур); FAIL — сломанное ожидание (останавливает стенд). Каждая операция идёт через единый контракт `IDataShieldCodec` — случайно библиотечным типом (`Api = A`) или через `DataShieldConsole` (`Api = C`); экземпляры освобождаются после операции; сид ПСЧ ротируется по расписанию (по умолчанию — раз в час). |
+| `DataShield.Console.Demo` | Бесконечный стенд *пользовательского контракта*: запускает настоящие исполнимые файлы `DataShield.Console.EN` / `DataShield.Console.RU` дочерними процессами и проверяет коды возврата, шапку, вывод справки, локализованные тексты ошибок, побитовые roundtrip'ы encode → decode и декодирование повреждённых потоков по локалям, написания опций и комбинациям флагов. |
+| `RsRaid16Demo` | Стенд стабильности RS: случайная геометрия томов (2 048..4 096), числа стираний строго ниже корректирующей способности, поблочная сверка восстановления. Аргумент `bench [--csv]` запускает вместо стенда калибровочную сетку — те самые измерения, на которых стоят дефолтные бюджеты времени/E декодера. |
+| `ShaCompactDemo` | Дифференциальный стресс: случайные буферы (1 Б..1 МиБ) хешируются `Sha256Compact`/`Sha512Compact` и встроенными реализациями .NET, результаты сравниваются; первое несовпадение останавливает программу. |
+
+Стенды не входят в `dotnet test`; это долгоживущие инструменты для соук-тестирования и калибровки.
+
+## 8. Кодовые конвенции кодовой базы
+
+- **Язык**: идентификаторы и публичный API — английские; XML-комментарии документации — русские. Новые комментарии согласуйте с файлом, который правите.
+- **Настройки проектов**: везде включены `Nullable` и `ImplicitUsings`; версии синхронизированы (`Version 3.0`, `AssemblyVersion 3.0.0.0`, `Product DataShield`, `Company Artem Drobanov`).
+- **Дисциплина видимости**: `internal` по умолчанию; `public` — только то, что действительно потребляют приложения (фасад кодека, наблюдаемые слота, типы опций). Доступ тестов — через `InternalsVisibleTo`, где нужно.
+- **Детерминизм**: всё со случайностью принимает явный сид (`Mt19937`, смеси `Random`); планирующий код чист и воспроизводим (см. `SubsetMaskPlanner`, `SectorCombinationMath`).
+- **Защитный жизненный цикл**: держатели данных пользователя реализуют `Clear()` (вайп, многоразово) и `Dispose()` (вайп, финально); неудачная верификация зачищает буферы; счётчики насыщаются вместо переполнения.
+- **Параллельность**: автоматы состояний сериализуются на `Gate`/`SyncRoot`; RS-адаптер бесприценен и безопасно разделяем.
+- **Изоляция чистой математики**: комбинаторика и вероятности живут в статических классах чистых функций (`SectorCombinationMath`, `CollisionMath`), юнит-тестируемых в изоляции.
+
+## 9. Точки расширения
+
+| Хотите… | Что трогать |
+|---|---|
+| Настроить лимиты восстановления | `SectorVersionSearchOptions` / `VolumeSubsetSearchOptions` (правки кода не нужны — это параметры конструктора; см. [AssemblyGuide §17](AssemblyGuide.ru.md)). |
+| Добавить формат контейнера вывода | енум `OutputFormat` + писатели/читатели `PacketIO` + `OutputFormatConfig.DetectFormat`. Конвейер декодера выше выбора фильтр/сканер формат-агностичен. |
+| Локализовать на другой язык | `CodecStrings` (фазы/отчёты кодека), `Strings.cs` каждого консольного приложения, файлы ресурсов GUI. Помните об оговорках глобального состояния из §6.3. |
+| Добавить потребителя секрета хеширования | `SecretScopeGuard` + классы `Sha*Secure` — больше ничего не должно знать о существовании секретов. |
+| Изменить формат на проводе | `PacketFormat` + `PacketHasher` + классификация `StreamProcessor` + документация. Рассматривайте как ревизию формата: поля версии в заголовке нет, совместимость обеспечивается сознательно (только автономные проверки). |
+| Порт на C++ | Начните с `refs-src` (это его заявленное назначение), затем портируйте `Packets` → `Ecc` → конвейер → оркестрацию кодека, в этом порядке. |
+
+## 10. Версионирование и метаданные
+
+Все проекты несут синхронизированные метаданные сборки (`Version 3.0`, копирайт «© 2026 Artem Drobanov»; стенды/бенчмарки дополнительно указывают Vladislav Utyumov в шапках). Метаданные пакетов декларируют `PackageLicenseExpression: MIT`; в корне репозитория лежит текст `LICENSE` Apache-2.0. `BuildInfo.BuildLabel` (Interfaces) ставит метку сборки в строки шапок стендов.
+
+## 11. Карта документов
+
+| Документ | Содержимое |
+|---|---|
+| [AlgorithmGuide](AlgorithmGuide.ru.md) | Формат на проводе и алгоритмы. |
+| [EncoderGuide](EncoderGuide.ru.md) | Работа с кодировщиком. |
+| [DecoderGuide](DecoderGuide.ru.md) | Работа с декодером. |
+| [AssemblyGuide](AssemblyGuide.ru.md) | Стадии сборки вглубь. |
+| [CollisionBench](CollisionBench.ru.md) | Методология бенчмарка коллизий. |
+| [DeveloperGuide](DeveloperGuide.ru.md) (этот файл) | Структура, сборка, тесты, референсы, конвенции. |
+| [UserGuide](UserGuide.ru.md) | Сквозное использование консольного приложения и GUI. |
+
+Английские зеркала всех документов несут суффикс `en` (`DeveloperGuide.en.md`, …).

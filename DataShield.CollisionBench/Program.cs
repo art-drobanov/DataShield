@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using DataShield.Codec.Packets;
 using DataShield.Interfaces;

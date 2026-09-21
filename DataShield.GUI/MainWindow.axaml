@@ -1,4 +1,4 @@
-<Window xmlns="https://github.com/avaloniaui"
+﻿<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:DataShield.Gui"
         xmlns:ctrl="clr-namespace:DataShield.Gui.Controls"
@@ -86,14 +86,16 @@
                 <RowDefinition Height="Auto" />   <!-- 3: Slot name (decode) -->
                 <RowDefinition Height="Auto" />   <!-- 4: Format -->
                 <RowDefinition Height="Auto" />   <!-- 5: Sector scheme -->
-                <RowDefinition Height="Auto" />   <!-- 6: Redundancy block -->
-                <RowDefinition Height="Auto" />   <!-- 7: Buttons -->
-                <RowDefinition Height="Auto" />   <!-- 8: Progress -->
-                <RowDefinition Height="Auto" />   <!-- 9: Status -->
-                <RowDefinition Height="Auto" />   <!-- 10: Result header -->
-                <RowDefinition Height="Auto" />   <!-- 11: Result content -->
-                <RowDefinition Height="Auto" />   <!-- 12: Map header -->
-                <RowDefinition Height="Auto" />   <!-- 13: Map content -->
+                <RowDefinition Height="Auto" />   <!-- 6: SHA-512 signatures -->
+                <RowDefinition Height="Auto" />   <!-- 7: Hash secret -->
+                <RowDefinition Height="Auto" />   <!-- 8: Redundancy block -->
+                <RowDefinition Height="Auto" />   <!-- 9: Buttons -->
+                <RowDefinition Height="Auto" />   <!-- 10: Progress -->
+                <RowDefinition Height="Auto" />   <!-- 11: Status -->
+                <RowDefinition Height="Auto" />   <!-- 12: Result header -->
+                <RowDefinition Height="Auto" />   <!-- 13: Result content -->
+                <RowDefinition Height="Auto" />   <!-- 14: Map header -->
+                <RowDefinition Height="Auto" />   <!-- 15: Map content -->
             </Grid.RowDefinitions>
 
             <!-- ── Режим + язык ──────────────────────────────────────────── -->
@@ -135,8 +137,8 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="{x:Static local:UiStrings.InputFileLabel}"
                            VerticalAlignment="Center" />
-                <TextBox Grid.Column="1" Margin="8,0" Padding="4,2"
-                         Text="{Binding InputPath}" />
+<TextBox Grid.Column="1" Margin="8,0" Padding="4,2" VerticalContentAlignment="Center"
+                          Text="{Binding InputPath}" />
                 <Button Grid.Column="2" Content="{x:Static local:UiStrings.BrowseButton}"
                         Padding="10,2" Click="BrowseInput_Click" />
             </Grid>
@@ -150,8 +152,8 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="{x:Static local:UiStrings.OutputFileLabel}"
                            VerticalAlignment="Center" />
-                <TextBox Grid.Column="1" Margin="8,0" Padding="4,2"
-                         Text="{Binding OutputPath}" />
+<TextBox Grid.Column="1" Margin="8,0" Padding="4,2" VerticalContentAlignment="Center"
+                          Text="{Binding OutputPath}" />
                 <Button Grid.Column="2" Content="{x:Static local:UiStrings.BrowseButton}"
                         Padding="10,2" Click="BrowseOutput_Click" />
             </Grid>
@@ -181,8 +183,50 @@
                       IsChecked="{Binding UseVirtualIndexScheme}"
                       IsEnabled="{Binding IsIdle}" />
 
+            <!-- ── Сигнатурные пакеты SHA-512 ────────────────────────────── -->
+            <Grid Grid.Row="6" Margin="0,0,0,8">
+                <!-- Кодирование: флажок вставки сигнатурных пакетов -->
+                <CheckBox Content="{x:Static local:UiStrings.SignaturePacketsLabel}"
+                          IsChecked="{Binding SignaturePackets512}"
+                          IsEnabled="{Binding IsIdle}"
+                          IsVisible="{Binding Mode, Converter={StaticResource EnumToBool},
+                                   ConverterParameter=Encode}" />
+                <!-- Декодирование: режим расширенной проверки -->
+                <StackPanel Orientation="Horizontal"
+                            IsVisible="{Binding Mode, Converter={StaticResource EnumToBool},
+                                     ConverterParameter=Decode}">
+                    <TextBlock Text="{x:Static local:UiStrings.SignatureModeLabel}"
+                               VerticalAlignment="Center" FontWeight="Medium"
+                               Margin="0,0,10,0" />
+                    <RadioButton Content="{x:Static local:UiStrings.SigModeBase}"
+                                 Margin="0,0,14,0" VerticalAlignment="Center"
+                                 IsChecked="{Binding SelectedSignatureMode, Converter={StaticResource EnumToBool},
+                                          ConverterParameter=Base}" />
+                    <RadioButton Content="{x:Static local:UiStrings.SigModeAuto}"
+                                 Margin="0,0,14,0" VerticalAlignment="Center"
+                                 IsChecked="{Binding SelectedSignatureMode, Converter={StaticResource EnumToBool},
+                                          ConverterParameter=Auto}" />
+                    <RadioButton Content="{x:Static local:UiStrings.SigModeForce}"
+                                 VerticalAlignment="Center"
+                                 IsChecked="{Binding SelectedSignatureMode, Converter={StaticResource EnumToBool},
+                                          ConverterParameter=Force}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ── Хеш-секрет (защищает все хеши «на проводе») ───────────── -->
+            <Grid Grid.Row="7" Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{x:Static local:UiStrings.HashSecretLabel}"
+                           VerticalAlignment="Center" />
+<TextBox Grid.Column="1" Margin="8,0,0,0" Padding="4,2" VerticalContentAlignment="Center"
+                          Text="{Binding HashSecret}" />
+            </Grid>
+
             <!-- ── Избыточность (рамка со слайдерами) ────────────────────── -->
-            <Border Grid.Row="6" Margin="0,0,0,8" Padding="8,5"
+            <Border Grid.Row="8" Margin="0,0,0,8" Padding="8,5"
                     BorderBrush="#B8DAEF" BorderThickness="1" CornerRadius="4"
                     IsVisible="{Binding Mode, Converter={StaticResource EccVis}}">
                 <StackPanel>
@@ -232,7 +276,7 @@
             </Border>
 
             <!-- ── Кнопки ────────────────────────────────────────────────── -->
-            <StackPanel Grid.Row="7" Orientation="Horizontal" Margin="0,0,0,8">
+            <StackPanel Grid.Row="9" Orientation="Horizontal" Margin="0,0,0,8">
                 <Button Classes="primary" Content="{x:Static local:UiStrings.RunButton}"
                         Padding="20,4" FontWeight="Medium"
                         Command="{Binding RunCommand}" Margin="0,0,8,0" />
@@ -242,7 +286,7 @@
             </StackPanel>
 
             <!-- ── Прогресс ──────────────────────────────────────────────── -->
-            <StackPanel Grid.Row="8" Margin="0,0,0,4">
+            <StackPanel Grid.Row="10" Margin="0,0,0,4">
                 <Grid>
                     <TextBlock Text="{x:Static local:UiStrings.ProgressCaption}" FontSize="11"
                                VerticalAlignment="Center" />
@@ -257,7 +301,7 @@
             </StackPanel>
 
             <!-- ── Статус ────────────────────────────────────────────────── -->
-            <Border Grid.Row="9" Margin="0,2,0,8" Padding="8,3" CornerRadius="3"
+            <Border Grid.Row="11" Margin="0,2,0,8" Padding="8,3" CornerRadius="3"
                     Classes="statusCard" Classes.error="{Binding StatusIsError}"
                     IsVisible="{Binding StatusMessage, Converter={StaticResource NullToVis}}">
                 <TextBlock Text="{Binding StatusMessage}" FontWeight="Medium"
@@ -266,13 +310,13 @@
             </Border>
 
             <!-- ── Результат: заголовок ──────────────────────────────────── -->
-            <TextBlock Grid.Row="10" Text="{x:Static local:UiStrings.ResultCaption}"
+            <TextBlock Grid.Row="12" Text="{x:Static local:UiStrings.ResultCaption}"
                        FontWeight="SemiBold" Foreground="#124E80" Margin="0,0,0,3" />
 
             <!-- ── Результат: содержимое ─────────────────────────────────── -->
-            <Border Grid.Row="11" Background="White" BorderBrush="#B8DAEF"
+            <Border Grid.Row="13" Background="White" BorderBrush="#B8DAEF"
                     BorderThickness="1" CornerRadius="3" Padding="8"
-                    Margin="0,0,0,8" Height="220">
+                    Margin="0,0,0,8" Height="280">
                 <ScrollViewer VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Auto">
                     <ItemsControl ItemsSource="{Binding ResultLines}">
@@ -289,11 +333,11 @@
             </Border>
 
             <!-- ── Карта: заголовок ─────────────────────────────────────── -->
-            <TextBlock Grid.Row="12" Text="{x:Static local:UiStrings.MapCaption}"
+            <TextBlock Grid.Row="14" Text="{x:Static local:UiStrings.MapCaption}"
                        FontWeight="SemiBold" Foreground="#124E80" Margin="0,0,0,3" />
 
             <!-- ── Карта: содержимое ────────────────────────────────────── -->
-            <Border Grid.Row="13" Background="White" BorderBrush="#B8DAEF"
+            <Border Grid.Row="15" Background="White" BorderBrush="#B8DAEF"
                     BorderThickness="1" CornerRadius="3" Height="164" Padding="0,4">
                 <Grid>
                     <Grid.RowDefinitions>

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using DataShield.Codec.Packets;
 
 namespace DataShield.CollisionBench;

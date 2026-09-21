@@ -1,4 +1,4 @@
-namespace DataShield.Codec.Reporting;
+﻿namespace DataShield.Codec.Reporting;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Локализация служебных строк кодека (названия фаз прогресса)
@@ -79,28 +79,41 @@ public static class CodecStrings
     public static string VolumeSubsetSearchFormat =>
         Ru ? "Подбор томов, попытка: {0} / {1}" : "Volume subset search, attempt: {0} / {1}";
 
-    // ── MAP-отчёт: карта валидности секторов ──────────────────────────────
+    // ── Отчёт (.report): кодирование/декодирование ──────────────────────────
 
-    /// <summary>Заголовок MAP-отчёта.</summary>
-    public static string MapReportTitle =>
-        Ru ? "DataShield : Карта валидности секторов" : "DataShield : Sector validity map";
+    /// <summary>Заголовок отчёта кодирования.</summary>
+    public static string EncodingReportTitle =>
+        Ru ? "DataShield : Отчет по кодированию" : "DataShield : Encoding report";
 
-    /// <summary>Метка MAP-отчёта: имя файла.</summary>
+    /// <summary>Заголовок отчёта декодирования.</summary>
+    public static string DecodingReportTitle =>
+        Ru ? "DataShield : Отчет по декодированию" : "DataShield : Decoding report";
+
+    /// <summary>Метка отчёта: имя файла.</summary>
     public static string MapFileName => Ru ? "Имя файла" : "File name";
 
-    /// <summary>Метка MAP-отчёта: размер файла.</summary>
+    /// <summary>Метка отчёта: размер файла.</summary>
     public static string MapSize => Ru ? "Размер" : "Size";
 
-    /// <summary>Метка MAP-отчёта: SHA-256 содержимого.</summary>
+    /// <summary>Метка отчёта: SHA-256 содержимого.</summary>
     public static string MapSha256 => "SHA-256";
 
-    /// <summary>Единица измерения размера в MAP-отчёте.</summary>
+    /// <summary>Метка отчёта: SHA-512 содержимого (расширенная проверка).</summary>
+    public static string MapSha512 => "SHA-512";
+
+    /// <summary>Единица измерения размера в отчёте.</summary>
     public static string MapBytesUnit => Ru ? "байт" : "bytes";
 
-    /// <summary>Метка MAP-отчёта: число принятых копий заголовка.</summary>
+    /// <summary>Метка отчёта: число принятых копий заголовка.</summary>
     public static string MapHeadersCount => Ru ? "Заголовков" : "Headers";
 
-    /// <summary>Метка MAP-отчёта: всего секторов.</summary>
+    /// <summary>Метка отчёта: число сигнатурных пакетов SHA-512.</summary>
+    public static string MapSignaturesCount => Ru ? "Сигнатурных" : "Signatures";
+
+    /// <summary>Метка отчёта: всего пакетов в потоке.</summary>
+    public static string MapPackets => Ru ? "Пакетов" : "Packets";
+
+    /// <summary>Метка отчёта: всего секторов.</summary>
     public static string MapTotal => Ru ? "Всего" : "Total";
 
     /// <summary>Метка MAP-отчёта: принято секторов.</summary>

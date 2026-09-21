@@ -1,4 +1,4 @@
-using DataShield.Interfaces;
+﻿using DataShield.Interfaces;
 
 namespace DataShield.Codec.StreamScanner;
 

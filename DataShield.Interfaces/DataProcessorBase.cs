@@ -1,4 +1,4 @@
-namespace DataShield.Interfaces;
+﻿namespace DataShield.Interfaces;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Базовая реализация обработчика данных

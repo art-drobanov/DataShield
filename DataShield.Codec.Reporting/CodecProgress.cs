@@ -1,4 +1,4 @@
-namespace DataShield.Codec.Reporting;
+﻿namespace DataShield.Codec.Reporting;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Отчёт о прогрессе кодирования/декодирования

@@ -1,119 +1,232 @@
-# File Encoding — An Engineering Walkthrough
+# DataShield Alpha-XVI — Encoder Guide
 
-An engineering walkthrough of file encoding: no formalism for its own sake — shorter notation, more "why it is built this way" and "how it behaves on real data". Format context is in `AlgorithmGuide.en.md` (sections 2–4). The reverse process is `DecoderGuide.en.md`.
+Reference for the sending side: configuration, volume arithmetic, packet construction, stream layout, output formats, statistics and reports.
 
-## 1. What we are building
+| | |
+|---|---|
+| Project | DataShield Alpha-XVI |
+| Document | `docs/EncoderGuide.en.md` (English); Russian mirror: `docs/EncoderGuide.ru.md` |
+| Audience | Application developers embedding the encoder; operators choosing redundancy and format settings |
+| Scope | `StreamEncoder` construction and parameters, encoding operations (core and facade), volume and header arithmetic, packet building, `ArrangePackets` layout, output formats and file naming (`OutputFormatConfig`, `PacketIO`), `EncodeStats`, the encoding report, progress phases, memory hygiene |
+| Out of scope | Format fundamentals ([AlgorithmGuide](AlgorithmGuide.en.md)), decoding ([DecoderGuide](DecoderGuide.en.md)), assembly ([AssemblyGuide](AssemblyGuide.en.md)), CLI and GUI ([UserGuide](UserGuide.en.md)) |
 
-`FileEncoder` turns a file into a list of 75-byte packets: `T` data sectors (N data + M ECC) plus `H` copies of the header. Four constructor parameters: `eccPercent` (default 10), `headerPercent` (3), `sectorScheme` (Classic), and `virtualIndexSectorLimit` (512; effective only under VirtualIndex). Everything else is derived. API: `Encode` (bytes or a `Stream`), `EncodeToText` (Base64, one line per packet), `EncodeWithStats` (+ an `EncodeStats` summary). Progress is global 0–100; cancellation via `CancellationToken`.
+Reference implementation: `DataShield.Codec` (`StreamEncoder.cs`, `EncodeStats.cs`, `PacketIO.cs`, `CodecReport.cs`, `DataShieldCodec.cs`), `DataShield.Codec.Packets` (`OutputFormat.cs`, `OutputFormatConfig.cs`).
 
-## 2. The loss model and redundancy
+## 1. Conventions used in this document
 
-The stream survives two kinds of damage: lost chunks (healed by ECC and header repeats) and garbage/desynchronization (healed by the decoder's sliding window). Hence the two percents:
+- `N` — data volumes, `M` — ECC volumes, `T = N + M` — total volumes; each volume is carried by exactly one sector packet ([AlgorithmGuide §8](AlgorithmGuide.en.md)).
+- `H` — the number of header copies in the stream; a **signature packet** follows every header copy when signatures are enabled.
+- Wire hashes are the values stored in packets (keyed by the hashing secret when one is set); **real** hashes are plain re-computations for reports.
+- Sizes: `B` = bytes, `MiB` = 1,048,576 B; one payload is 64 B; one packet is 75 B = 100 Base64 characters.
 
-- **ECC** — how many data volumes can be lost irrecoverably: `M = max(1, ⌈N·p/100⌉)`. The loss of any `k ≤ M_avail` data volumes is recoverable; lost ECC volumes cost nothing.
-- **Headers** — the survivability of file identification: `H = max(3, ⌈T·h/100⌉)`. Always three copies: start, end, middle.
+## 2. What one encoding produces
 
-On small files the percents act as "at least one/three" — the redundancy is multiples of the whole, but that is the price of the guarantee.
+An encoding run turns `content + fileName` into an ordered list of 75-byte packets:
 
-## 3. Format constants
-
-| Constant | Value | Meaning |
-| --- | --- | --- |
-| `PacketSize` | 75 | the indivisible packet |
-| `PayloadSize` | 64 | D2 |
-| `HeaderContentSize` | 51 | H1–H4 |
-| `HeaderHashSize` | 24 | H5, 192 bits |
-| `SectorHashSize` | 9 | D3, 72 bits |
-| `MaxFileSizeField` | 16,777,215 | the file ceiling (3-byte field) |
-| `MaxDataVolumes` | 65,535 | the N+M ceiling (GF(2¹⁶)) |
-| `VirtualIndexHasher.HashSize` | 11 | the sector hash in the VirtualIndex scheme, 88 bits |
-| `VirtualIndexHasher.DefaultSectorLimit` | 512 | the N+M ceiling for the VirtualIndex scheme |
-
-Exceeding them throws `InvalidOperationException` — never a silently truncated output.
-
-## 4. Data preparation
-
-Order: checks → `FileNameCodec.Pack(Path.GetFileName(name))` → `Sha256Compact.HashData(content)` → dimensions:
-
-```
-N = max(1, ⌈FileSize/64⌉);  M = max(1, ⌈N·ecc%/100⌉) or 0;  T = N+M
+```text
+[header (+signature)]  sector₀ … sectorᵢ [header (+signature)] sectorᵢ₊₁ … … [header (+signature)]
 ```
 
-Slicing: N payloads of 64 bytes, the last one zero-padded. Intermediate buffers are wiped after the packets are assembled: the file's contents must not linger in memory longer than necessary.
+- Every data volume and every ECC volume becomes one sector packet (Classic or VirtualIndex scheme).
+- The stream **opens** with a header packet and **closes** with a header packet; further header copies are spread evenly through the body (§7).
+- With `signaturePackets512` enabled, each header copy is immediately followed by one signature packet (`S1 ‖ Trunc11(SHA-512(S1))`).
 
-The name in 14 bytes: split at the first dot, the extension (including `.tar.gz`) is preserved whole, the base is quantized, a `~` is appended on truncation. A base budget < 2 bytes — refusal. Failing at name-packing time is right: better an exception now than a header with an empty/mangled name.
+The decoder side does not depend on this ordering — it reorders anything — but the layout maximizes survival for the typical damage pattern (truncation from either end, middle dropouts).
 
-## 5. RS encoding
+## 3. Constructing an encoder
 
-`RsCodecAdapter.Encode(dataPayloads, M)`: a 64-byte volume = 32 GF(2¹⁶) symbols (UInt16 LE); for each of the 32 positions a column of N data symbols is assembled, and `RsRaid16.Process` appends M ECC symbols — linear combinations over the field. Positions are independent; progress ticks per symbol. The `K+M ≤ 65535` check runs before the start. The field math itself lives in the reference `RsRaid16` and is untouched.
+```csharp
+public StreamEncoder(
+    int eccPercent = 10,
+    int headerPercent = 3,
+    SectorScheme sectorScheme = SectorScheme.Classic,
+    int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit,
+    bool signaturePackets512 = false,
+    string? hashSecret = null)
+```
 
-Output properties: any set of `M` available ECC covers `M` lost data volumes; recovery is exact linear algebra — no search, no probabilities.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `eccPercent` | **10** | 0 — no RS redundancy; ≥ 1 — `M = max(1, round(N·pct/100))`, at least one ECC volume. Negative values are rejected. |
+| `headerPercent` | **3** | Header copies as a percentage of `T`; always at least 3 (begin/middle/end). |
+| `sectorScheme` | **Classic** | `VirtualIndex` drops the stored sector index and spends the bytes on an 11-byte hash tag ([AlgorithmGuide §5.3](AlgorithmGuide.en.md)). |
+| `virtualIndexSectorLimit` | **512** | Files with `T` above the limit are **refused** under VirtualIndex — there is no silent downgrade to Classic (the operator's security expectations would silently change). |
+| `signaturePackets512` | **off** | Emit a SHA-512 signature packet after every header copy; enables the decoder's Exact(SHA-256) & Any(SHA-512) verification. |
+| `hashSecret` | **none** | Keys all wire hashes for this instance's operations; the decoder must be configured with the same secret. |
 
-## 6. The header packet
+Two hard format limits surface as `InvalidOperationException` at encode time: file size above 16,777,215 B (the 3-byte `H2` field), and `T` above 65,535 (`MaxDataVolumes`). Since `T ≥ N = ⌈size/64⌉`, the practical payload ceiling is ≈ 4.0 MiB with zero ECC, less with redundancy.
 
-`HeaderContent` serializes into 51 bytes (H1 name, H2 size LE, H3 SHA-256, H4 M LE), then `H5 = Trunc24(SHA-256(51 bytes))` — and the packet is ready: 51+24. H5's double role: an autonomous self-check for the header (the decoder needs to know nothing in advance) and the seed for the D3 of all the file's sectors. Truncation to 192 bits suffices: a false positive ≈ 2⁻¹⁹².
+## 4. Encoding operations
 
-## 7. Data sectors
+Core class (`StreamEncoder`, stateless between calls — parallel encodes on one instance are safe):
 
-Each payload → a sector `D1(2 LE) ‖ D2(64) ‖ D3(9)`, where `D3 = Trunc9(SHA-256(H5 ‖ D1 ‖ D2))`. The hash input is 90 bytes. The key invariant: **a sector cannot be verified without H5**, so foreign packets do not stick to the file, and its own sectors are recognized only after the header (the "sector before header" problem is solved on the decoder side by targeted rebinding — `DecoderGuide.en.md`, section 10).
+| Operation | Returns |
+|---|---|
+| `Encode(content, fileName)` (+progress/ct) | `List<byte[]>` — raw 75-byte packets. |
+| `EncodeToText(content, fileName)` | Base64 text, one 100-char line per packet (no decorative framing — that is `PacketIO`'s file-level concern, §8). |
+| `EncodeWithStats(content, fileName)` | `(packets, EncodeStats)` — packets plus the operation summary (§9). |
+| Stream inputs | Every `Stream` overload reads the content fully first (`ReadStreamContent`, size-checked, works on non-seekable streams) — SHA-256 and RS need the complete buffer anyway. |
 
-The optional `SectorScheme.VirtualIndex` scheme (built by `BuildVirtualIndexSector`): the sector is `payload(64) ‖ Trunc11(SHA-256(H5 ‖ payload ‖ idxLE))` — no number in the packet, it is "virtual", and the 2 bytes go to the hash: 72 → 88 bits minus log2(N+M) for the reception scan, i.e. 79 effective bits at the 512-volume ceiling. Applicable when N+M ≤ `virtualIndexSectorLimit` (range 1..512, default 512); exceeding it throws `InvalidOperationException` before any work starts — no silent downgrade to Classic. Receiving such a sector costs up to N+M hashes instead of one (details in `AlgorithmGuide.en.md`, section 2.4, and `DecoderGuide.en.md`); enable it deliberately — for the +7 bits of strength on small files. Headers, ECC, and stream placement are unchanged in this mode.
+Facade (`DataShieldCodec`) adds the collection conveniences:
 
-## 8. Header placement
+| Facade operation | Behavior |
+|---|---|
+| `EncodeToPackets(content, fileName)` | packets, from bytes / enumeration / stream. |
+| `EncodeToText(content, fileName)` | Base64 text (via `PacketIO`, **with** decorative framing when written by `Encode`). |
+| `EncodeToBytes(content, fileName)` | binary concatenation (75 B × packets). |
+| `EncodeInto(content, fileName, output)` | appends packets into a caller-owned collection; returns the count. |
+| `Encode(content-stream, output-stream, format, fileName)` | writes the FEC stream in the requested format and returns `EncodeStats`. |
 
-`ArrangePackets(headerPacket, sectors, H)`: the first and last packets are headers; the intermediate `H−2` copies are inserted after every `⌈T/(H−1)⌉`-th sector. Evenness means: cutting out any single interval of the stream leaves ≥ 2 copies with probability close to one at realistic T. Sector order is natural: no shuffling is needed — the decoder's windows survive desynchronization on their own.
+## 5. Volume and header arithmetic
 
-## 9. Output formats and PacketIO
+All formulas are public static members of `StreamEncoder` — usable to preview sizing without encoding:
 
-- **Base64** (`.DataShield.txt`): a line = a packet = exactly 100 characters; `=` never occurs (75 is a multiple of 3). The decorative frames `>[name][size][SHA-256:hex]` / `<[…]` are for humans; the decoder's filter discards them.
-- **Binary** (`.DataShield.bin`): raw packets back to back.
+| Quantity | Formula | Notes |
+|---|---|---|
+| `N` | `max(1, ⌈fileSize / 64⌉)` | an empty file still occupies one volume (zeros) |
+| `M` | `max(1, round(N · eccPercent / 100))` when `eccPercent ≥ 1`, else 0 | rounding is half-up: `(N·pct + 50) / 100` |
+| `T` | `N + M ≤ 65,535` | hard format limit |
+| `H` | `max(3, round(T · headerPercent / 100))` | half-up, minimum 3 |
+| middle headers | `H − 2` | first and last are fixed |
+| insertion interval | `max(1, T / (middle + 1))` sectors | even spread |
 
-`PacketIO.WriteFile` writes a file or a stream; `GetDefaultOutputPath` = input + the format's extension; `DetectFormat` on reading looks at the extension (anything unrecognized → Base64).
+Worked example — a 128 B file, defaults (`eccPercent 10`, `headerPercent 3`, signatures on):
 
-## 10. Progress and cancellation
+| Step | Value |
+|---|---|
+| `N` | `⌈128/64⌉ = 2` |
+| `M` | `max(1, round(0.2)) = 1` |
+| `T` | `3` |
+| `H` | `max(3, round(0.09)) = 3` → no middle headers (begin + end only) |
+| Packets | `2 data + 1 ECC + 3 headers + 3 signatures = 9` |
 
-Global-scale phases: preparation 0–10, ECC 10–75 (rescaled by `ScaledProgress`), packetization 75–100, finale `Done`. Whole-percent throttling (`ProgressThrottle`). Cancellation is checked between phases and inside the RS symbol loop; the exception goes outward; a half-stream is never returned.
+A 1 MiB file: `N = 16,384`, `M = 1,638`, `T = 18,022`, `H = 541` → `19,104` sector packets plus `541` headers (+ `541` signatures when enabled) — an expansion of ≈ 1.82× in binary bytes.
 
-## 11. Statistics and wipes
+## 6. Packet construction
 
-`EncodeWithStats` returns `EncodeStats(FileSize, Sha256, DataCount, EccCount, TotalPackets, HeaderCopies)` — everything the UI needs to report "what you will get". After `Encode`, the data payloads, ECC payloads, and header bytes are zeroed. The resulting packets live on as is — their contents inevitably contain the data.
+Three builders (all `internal`, exercised through `Encode`):
 
-## 12. Stream input
+| Builder | Output |
+|---|---|
+| `BuildHeaderPacket` | `H1..H4 (51 B) ‖ H5 = Trunc24(SHA-256(H1..H4))` — the packet that identifies the file. |
+| `BuildDataSector` | `D1 = seqNum LE(2) ‖ D2 = payload(64) ‖ D3 = Trunc9(SHA-256(H5 ‖ D1 ‖ D2))` — the Classic scheme. |
+| `BuildVirtualIndexSector` | `payload(64) ‖ Trunc11(SHA-256(H5 ‖ payload ‖ idx LE))` — the VirtualIndex scheme; the index exists only inside the hash input. |
 
-`ReadStreamContent`: a seekable stream is read into an array by the remainder (`Length − Position`, ceiling checked); a non-seekable one via a `MemoryStream` copy. The stream is not closed; any `Stream` works, including `MemoryStream`. The full read is not a whim: SHA-256 and RS encoding require the entire contents.
+The header is built once, its `H5` computed once, and every sector is hashed under that `H5` — which is why fragments of different files cannot intermix silently downstream.
 
-## 13. End-to-end example
+The last data volume is zero-padded to 64 B; the true size travels in `H2` and the final SHA-256 gate ignores the padding.
 
-A 1000-byte file, 10% ECC, 3% headers: `N=16`, `M=2`, `T=18`, header copies `max(3, ⌈0.54⌉)=3`, interval 9 → the stream `H D0…D8 H D9…D17 H`, 20 packets: 1500 bytes binary or 20×100 Base64 characters. The last data volume: 40 bytes of data + 24 zeros. For large N the expansion converges to ≈132% (binary) and ≈176% (Base64).
+## 7. Stream layout: `ArrangePackets`
 
-## 14. Parameters and limits
+The placement algorithm:
 
-| Parameter | Range | Effect |
-| --- | --- | --- |
-| `eccPercent` | 0…100 (beyond that it hits the GF ceiling) | M volumes; 0 = no recovery |
-| `headerPercent` | 0…100 | H copies; always ≥ 3 |
-| File size | ≤ 16,777,215 | field H2 |
-| `N+M` | ≤ 65,535 | GF(2¹⁶) field |
-| `sectorScheme` | Classic / VirtualIndex | the sector layout (section 7) |
-| `virtualIndexSectorLimit` | 1…512 | the N+M ceiling for VirtualIndex; default 512 |
+1. Emit the header packet (+ signature if enabled) — the stream's first packet.
+2. If `H ≤ 2`: append all sector packets.
+3. Otherwise: append sector packets, and after every `interval`-th sector insert a header copy (+ signature) while middle-header budget lasts. The interval is `max(1, T / (middle + 1))`, so copies land at roughly even positions; sector order itself stays sequential (friendly to the receiver's VirtualIndex cursor).
+4. Emit the header packet (+ signature) — the stream's last packet.
 
-Rule of thumb: `eccPercent=10` loses data irrecoverably only when > 10% of data volumes **and** the corresponding ECC are lost; `headerPercent=3` puts a header copy roughly every 33 sectors.
+Consequences worth internalizing:
 
-## 15. Edge cases
+- Any single truncation of the stream keeps at least one header reachable from the surviving side; a header always sits at an extreme of every large surviving fragment's neighborhood.
+- Signature copies always travel adjacent to header copies, so the pair survives or dies together.
+- Sector packets themselves are order-independent for the decoder; the sequential order is an optimization, not a requirement.
 
-- Empty file → `N=1` (one zero volume), assembles correctly.
-- `eccPercent=0` → the ECC phase is skipped entirely (zero overhead).
-- A 1-byte file with ECC → `N=1, M=1, T=2`, 6400% redundancy — the guarantee works.
-- A long extension (base < 2 bytes) → refusal at name packing.
-- A file beyond the ceilings → explicit exceptions with the numbers in the message.
-- `VirtualIndex` with N+M > `virtualIndexSectorLimit` → `InvalidOperationException` with the numbers (no downgrade to Classic).
+## 8. Output formats and file naming
 
-## 16. What is guaranteed
+`OutputFormat` selects the container:
 
-1. Either a complete, correct stream or an exception — no intermediate states.
-2. `H3` is the exact SHA-256; the assembly arbitration is impeccable.
-3. Every sector is bound by the `H5` seed; substitution fails the D3 check.
-4. The loss of ≤ M data volumes is recoverable given surviving ECC (exact algebra, not a heuristic).
-5. A minimum of 3 header copies, evenly: start/middle/end.
-6. Intermediate buffers are wiped: no extra copies of the contents linger in memory.
-7. Under `VirtualIndex` only the sector layout changes: guarantees 1–6 hold; per-packet strength reaches 79 bits at N+M = 512.
+| Format | Extension | Content |
+|---|---|---|
+| `Base64` | `.DataShield.txt` | UTF-8 text; one packet per line; optional decorative first/last lines (see below). |
+| `Binary` | `OutputFormat.Binary` → `.DataShield.bin` | raw 75-byte packets, concatenated, no separators. |
+
+`PacketIO.WriteBase64Text` adds **decorative framing** when the source file name is supplied — exactly 100 characters each, so they never disturb scanning:
+
+```text
+>[REPORT.BIN    ][0000640][SHA-256:9f86d0…8]
+i1QyN3Lz…  (100 Base64 chars, one packet)
+…
+<[REPORT.BIN    ][0000640][SHA-256:9f86d0…8]
+```
+
+The bracket fields reuse the header's packed name (14 chars, `FileNameCodec.Pack`), the size as 7 zero-padded decimal digits, and the hex SHA-256. The lines are human convenience only — the decoder ignores everything outside the Base64 alphabet, including these lines.
+
+Naming helpers (`OutputFormatConfig`):
+
+| Helper | Rule |
+|---|---|
+| `GetDefaultOutputPath(input, format)` | `input + ".DataShield.txt"/".DataShield.bin"`. |
+| `DetectFormat(path)` | `.txt` → Base64, `.bin` → Binary, anything else → Base64. |
+| `StripFecSuffix(path)` | Drops a trailing `.DataShield.*` suffix (`data.DataShield.bin` → `data`). |
+| `GetDefaultDecodeOutputPath(path)` | Strips the FEC suffix; if none was present, inserts `.out` before the extension (`stream.txt` → `stream.out.txt`) so decode output never overwrites the input. |
+
+## 9. `EncodeStats`: the operation summary
+
+`EncodeWithStats` returns the metadata of what was just produced:
+
+| Field | Meaning |
+|---|---|
+| `FileSize` | Original size in bytes. |
+| `Sha256` / `Sha512` | **Wire** hashes — the values stored in the header/signature packets; keyed when a secret is configured. |
+| `RealSha256` / `RealSha512` | **Real** (secret-free) hashes recomputed in RAM — fit for reports and logs; what a third party would compute. |
+| `DataCount` / `EccCount` | `N` and `M`. |
+| `TotalPackets` | Everything in the stream, headers and signatures included. |
+| `HeaderCopies` / `SignatureCopies` | Copy counts, derived from the stream shape: extras = `TotalPackets − N − M`; with signatures enabled the extras split evenly (each header is followed by exactly one signature), otherwise all extras are headers. |
+| `SignaturePackets512` | Convenience flag: signatures are present. |
+
+The wire/real distinction exists so that secret-mode operations can still produce meaningful reports without ever printing a keyed value (§10).
+
+## 10. The encoding report
+
+`CodecReport.WriteEncoding(path, stats, fileName)` writes `<output>.report.txt` (localized via `CodecStrings.Language`; the same routine serves GUI and console):
+
+```text
+         ════════════════════════════════════════════════════════════════
+         DataShield : Encoding report
+         ════════════════════════════════════════════════════════════════
+         File name  : report.bin
+         Size       : 640 bytes
+         SHA-256    : 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+         SHA-512    : 2b0c4e…(64 hex)
+                    : …(64 hex, aligned continuation)
+         N (data)   : 10
+         M (ECC)    : 1
+         Headers    : 3
+         Signatures : 3
+         Packets    : 17
+```
+
+Rules: SHA-512 prints as two aligned lines only when signatures are enabled; a hash line that had to fall back to the wire value (no real hash available) is marked with a trailing `*` — under a secret that value is keyed and must not be treated as a plain digest.
+
+## 11. Progress phases
+
+Encoding reports on the global 0..100 scale in three phases (names from `CodecStrings`, throttled to whole percentages by `ProgressThrottle`):
+
+| Range | Phase |
+|---|---|
+| 0..10 | "Preparing data" — hashing, slicing into payloads |
+| 10..75 | "ECC encoding" — the RS pass (internally scaled by `ScaledProgress`) |
+| 75..100 | "Building packets" — per-sector packet construction |
+| 100 | "Done" |
+
+Cancellation is checked at phase ticks; the token reaches the RS kernel as well.
+
+## 12. Memory hygiene and concurrency
+
+- After a successful `Encode`, all intermediate buffers are wiped: data payloads, ECC payloads and the serialized header (`Array.Clear`). Only the returned packets (which must survive — they are the product) and the caller's content remain.
+- `StreamEncoder` keeps no per-operation state (configuration only), so parallel `Encode` calls on one instance are safe; the `DataShieldCodec` facade additionally serializes everything behind its own gate.
+- The hashing self-test (`VerifySha256`) runs before every operation.
+
+## 13. Document map
+
+| Document | Content |
+|---|---|
+| [AlgorithmGuide](AlgorithmGuide.en.md) | Wire format and algorithms; the format-level view of everything built here. |
+| [EncoderGuide](EncoderGuide.en.md) (this file) | Encoder usage, layout, formats, statistics, reports. |
+| [DecoderGuide](DecoderGuide.en.md) | Feeding the produced streams back in. |
+| [AssemblyGuide](AssemblyGuide.en.md) | How the receiver arbitrates damage in what the encoder produced. |
+| [CollisionBench](CollisionBench.en.md) | Why Classic and VirtualIndex have the strengths they have. |
+| [DeveloperGuide](DeveloperGuide.en.md) | Project layout, build, tests. |
+| [UserGuide](UserGuide.en.md) | End-to-end usage from the console application and the GUI. |
+
+Russian mirrors of every document carry the `ru` suffix (`EncoderGuide.ru.md`, …).

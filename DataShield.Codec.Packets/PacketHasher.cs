@@ -1,4 +1,4 @@
-using DataShield.Codec.Reporting;
+﻿using DataShield.Codec.Reporting;
 
 namespace DataShield.Codec.Packets;
 
@@ -12,6 +12,10 @@ namespace DataShield.Codec.Packets;
 /// H5 заголовка — Trunc24(SHA-256(H1–H4)): 24 байта (192 бита), ложное
 /// срабатывание классификации 2⁻¹⁹². D3 сектора — Trunc9(SHA-256(H5 ‖ D1 ‖ D2)):
 /// привязка к заголовку файла, без него проверка невозможна.
+///
+/// Расчёт идёт через <see cref="Sha256Secure"/>: в режиме «с секретом»
+/// (статическое свойство <c>Sha256Secure.HashSecret</c>) защищены все
+/// значения «на проводе»; без секрета поведение идентично Sha256Compact.
 /// </summary>
 public static class PacketHasher
 {
@@ -24,7 +28,7 @@ public static class PacketHasher
                 nameof(headerContent));
 
         Span<byte> hash = stackalloc byte[32];
-        Sha256Compact.HashData(headerContent, hash);
+        Sha256Secure.HashData(headerContent, hash);
         return hash[..PacketFormat.HeaderHashSize].ToArray();
     }
 
@@ -58,7 +62,7 @@ public static class PacketHasher
             return false;
 
         Span<byte> hash = stackalloc byte[32];
-        Sha256Compact.HashData(
+        Sha256Secure.HashData(
             packet[..PacketFormat.HeaderContentSize],
             hash);
 
@@ -101,6 +105,6 @@ public static class PacketHasher
 
         headerHash.CopyTo(input);
         sectorContent.CopyTo(input[PacketFormat.HeaderHashSize..]);
-        Sha256Compact.HashData(input, hash);
+        Sha256Secure.HashData(input, hash);
     }
 }

@@ -1,4 +1,4 @@
-using DataShield.Codec.Packets;
+﻿using DataShield.Codec.Packets;
 using DataShield.Codec.StreamProcessor;
 using DataShield.Codec.StreamProcessor.Versions;
 using DataShield.Interfaces;
