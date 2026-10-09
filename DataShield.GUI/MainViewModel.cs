@@ -503,6 +503,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 codec.SignatureCheckActive, codec.SignaturePacketCount,
                 hashSecretUsed: hashSecret is not null), ct);
 
+        // Контрольная сумма восстановленного файла (sha256sum) —
+        // рядом с ним: «файл».sha256
+        await Task.Run(() => CodecReport.WriteSha256Sidecar(outputPath, content), ct);
+
         var realSha256 = await Task.Run(() => Sha256Compact.HashData(content), ct);
 
         ResultLines.Clear();

@@ -1,0 +1,23 @@
+<Project>
+
+  <!--
+    Единая версия продукта для всех проектов решения: из VersionPrefix SDK
+    автоматически выводит Version, AssemblyVersion, FileVersion и
+    InformationalVersion каждой сборки. Смена версии — правка одной строки.
+    Метка этапа разработки (BuildLabel) внедряется во все сборки как
+    AssemblyMetadataAttribute и читается через BuildInfo.BuildLabel
+    (DataShield.Interfaces). Смена метки — тоже правка одной строки.
+  -->
+  <PropertyGroup>
+    <VersionPrefix>3.0</VersionPrefix>
+    <BuildLabel>Alpha-XVII</BuildLabel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>BuildLabel</_Parameter1>
+      <_Parameter2>$(BuildLabel)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

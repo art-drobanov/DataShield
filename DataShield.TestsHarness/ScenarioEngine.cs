@@ -149,17 +149,20 @@ public static class ScenarioEngine
     /// <param name="plan">План итерации.</param>
     /// <param name="encoded">Пакеты и статистика каждого файла плана.</param>
     /// <param name="rng">Генератор случайных чисел.</param>
+    /// <param name="hashSecret">Секрет хеширования операции (null/пустая — без секрета):
+    /// распознавание и подделка пакетов считают хеши в том же режиме.</param>
     public static DamageResult ApplyDamage(
         ScenarioPlan plan,
         IReadOnlyList<(IReadOnlyList<byte[]> Packets, EncodeStats Stats)> encoded,
-        Random rng)
+        Random rng, string? hashSecret = null)
     {
         if (plan.Kind == ScenarioKind.MultiConcat)
             return DamageEngine.ConcatMultiFile(encoded, rng);
 
         if (plan.Kind == ScenarioKind.MultiShuffled)
             return DamageEngine.ApplyMultiFile(
-                encoded, rng, schemes: plan.Files.Select(f => f.Scheme).ToList());
+                encoded, rng, schemes: plan.Files.Select(f => f.Scheme).ToList(),
+                hashSecret: hashSecret);
 
         var overkill = 0;
         var collisionKill = false;
@@ -174,7 +177,7 @@ public static class ScenarioEngine
         var (packets, stats) = encoded[0];
         return DamageEngine.Apply(
             packets, stats, plan.Format, rng, overkill, collisionKill,
-            plan.Files[0].Scheme);
+            plan.Files[0].Scheme, hashSecret);
     }
 
     /// <summary>
@@ -185,11 +188,11 @@ public static class ScenarioEngine
     public static DamageResult ApplyDamageUniform(
         ScenarioPlan plan,
         IReadOnlyList<(IReadOnlyList<byte[]> Packets, EncodeStats Stats)> encoded,
-        Random rng)
+        Random rng, string? hashSecret = null)
     {
         for (var attempt = 0; ; attempt++)
         {
-            var damage = ApplyDamage(plan, encoded, rng);
+            var damage = ApplyDamage(plan, encoded, rng, hashSecret);
             if (CodecVariants.IsUniform(damage) || attempt >= UniformAttempts)
                 return damage;
         }

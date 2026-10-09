@@ -47,8 +47,8 @@ public sealed class StreamEncoder : StreamCodec
     public bool SignaturePackets512 => _signaturePackets512;
 
     /// <summary>
-    /// Секрет хеширования операции (контекстен, см. <see cref="SecretScopeGuard"/>):
-    /// защищает хеши «на проводе» (SHA-256 заголовка, SHA-512 сигнатур).
+    /// Секрет хеширования операции: защищает хеши «на проводе»
+    /// (SHA-256 заголовка, SHA-512 сигнатур).
     /// null/пустая строка — обычный режим без секрета.
     /// </summary>
     public string? HashSecret => _hashSecret;
@@ -138,7 +138,6 @@ public sealed class StreamEncoder : StreamCodec
         ReadOnlySpan<byte> content, string fileName,
         IProgress<CodecProgress>? progress, CancellationToken ct)
     {
-        using var _ = new SecretScopeGuard(_hashSecret);
         VerifySha256();
 
         var fileSize = (uint)content.Length;
@@ -160,7 +159,7 @@ public sealed class StreamEncoder : StreamCodec
 
         // ── SHA-256 содержимого (режим «секрет» — Sha256Secure) ─────────────
         ProgressThrottle.Tick(progress, ref lastPct, 0, 100, CodecStrings.DataPreparation, ct);
-        var sha256 = Sha256Secure.HashData(content);
+        var sha256 = Sha256Secure.HashData(content, _hashSecret);
 
         // ── Размерности ──────────────────────────────────────────────────────
         var dataCount = Math.Max(1,
@@ -210,13 +209,13 @@ public sealed class StreamEncoder : StreamCodec
             EccCount = (ushort)eccCount,
         };
         var headerBytes = header.ToBytes();
-        var headerHash = PacketHasher.ComputeHeaderHash(headerBytes);
+        var headerHash = PacketHasher.ComputeHeaderHash(headerBytes, _hashSecret);
         var headerPacket = BuildHeaderPacket(headerBytes, headerHash);
 
         // ── Сигнатурный пакет SHA-512 (S1 ‖ Trunc11(SHA-512(S1))) ────────────
         byte[]? signaturePacket = null;
         if (_signaturePackets512)
-            signaturePacket = SignaturePacket.Build(content);
+            signaturePacket = SignaturePacket.Build(content, _hashSecret);
 
         // ── Секторы данных и ECC ─────────────────────────────────────────────
         var allPayloads = new byte[totalCount][];
@@ -230,8 +229,8 @@ public sealed class StreamEncoder : StreamCodec
                 PhaseEccEnd + (i + 1) * (PhasePacketsEnd - PhaseEccEnd) / totalCount, 100,
                 CodecStrings.PacketBuilding, ct);
             dataSectors[i] = SectorScheme == SectorScheme.VirtualIndex
-                ? BuildVirtualIndexSector(i, allPayloads[i], headerHash)
-                : BuildDataSector(i, allPayloads[i], headerHash);
+                ? BuildVirtualIndexSector(i, allPayloads[i], headerHash, _hashSecret)
+                : BuildDataSector(i, allPayloads[i], headerHash, _hashSecret);
         }
 
         // ── Расположение пакетов для передачи ────────────────────────────────
@@ -313,13 +312,12 @@ public sealed class StreamEncoder : StreamCodec
         ReadOnlySpan<byte> content, string fileName,
         IProgress<CodecProgress>? progress, CancellationToken ct)
     {
-        using var _ = new SecretScopeGuard(_hashSecret);
         var packets = Encode(content, fileName, progress, ct);
 
         // Размерности и хеши пересчитываются здесь, а не возвращаются из
         // Encode, чтобы ядро кодирования оставалось свободным от статистики
         var fileSize = (uint)content.Length;
-        var sha256 = Sha256Secure.HashData(content);
+        var sha256 = Sha256Secure.HashData(content, _hashSecret);
         var dataCount = Math.Max(1,
             (int)((fileSize + (uint)PacketFormat.PayloadSize - 1) / PacketFormat.PayloadSize));
         var eccCount = ComputeEccCount(dataCount, _eccPercent);
@@ -333,7 +331,7 @@ public sealed class StreamEncoder : StreamCodec
 
         // Значения «на проводе» (в режиме «секрет» защищены) и реальные
         // (без секрета, из ОЗУ) — для отчёта и сводок
-        byte[]? sha512 = _signaturePackets512 ? Sha512Secure.HashData(content) : null;
+        byte[]? sha512 = _signaturePackets512 ? Sha512Secure.HashData(content, _hashSecret) : null;
         var realSha256 = Sha256Compact.HashData(content);
         byte[]? realSha512 = _signaturePackets512 ? Sha512Compact.HashData(content) : null;
 
@@ -420,7 +418,8 @@ public sealed class StreamEncoder : StreamCodec
     /// Сектор данных: seqNum(2) + payload(64) + D3(9).
     /// D3 = Trunc9(SHA-256(headerHash ‖ sector[0..65])).
     /// </summary>
-    internal static byte[] BuildDataSector(int sectorNum, byte[] payload, byte[] headerHash)
+    internal static byte[] BuildDataSector(
+        int sectorNum, byte[] payload, byte[] headerHash, string? hashSecret)
     {
         var sector = new byte[PacketFormat.PacketSize];
 
@@ -434,7 +433,7 @@ public sealed class StreamEncoder : StreamCodec
 
         // D3: хеш с сидом headerHash (поле H5)
         var hash = PacketHasher.ComputeSectorHash(
-            sector.AsSpan(0, PacketFormat.SectorContentSize), headerHash);
+            sector.AsSpan(0, PacketFormat.SectorContentSize), headerHash, hashSecret);
         hash.AsSpan().CopyTo(sector.AsSpan(PacketFormat.SectorHashOffset));
 
         return sector;
@@ -446,10 +445,10 @@ public sealed class StreamEncoder : StreamCodec
     /// сектора в пакет не записывается (виртуальный индекс).
     /// </summary>
     internal static byte[] BuildVirtualIndexSector(
-        int sectorNum, byte[] payload, byte[] headerHash)
+        int sectorNum, byte[] payload, byte[] headerHash, string? hashSecret)
     {
         var sector = new byte[PacketFormat.PacketSize];
-        VirtualIndexHasher.BuildPacketInto(payload, sectorNum, headerHash, sector);
+        VirtualIndexHasher.BuildPacketInto(payload, sectorNum, headerHash, sector, hashSecret);
         return sector;
     }
 }

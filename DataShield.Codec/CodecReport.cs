@@ -34,6 +34,12 @@ public static class CodecReport
     /// <summary>Ширина колонки меток в отчёте.</summary>
     private const int LabelWidth = 10;
 
+    /// <summary>Отступ строк полей в отчёте кодирования.</summary>
+    private const string EncodingIndent = "    ";
+
+    /// <summary>Отступ строк полей в отчёте декодирования.</summary>
+    private const string DecodingIndent = "         ";
+
     /// <summary>
     /// Путь отчёта: полное имя выходного файла на декодере
     /// + «.report.txt», в каталоге выходного файла.
@@ -54,23 +60,23 @@ public static class CodecReport
     {
         using var sw = new StreamWriter(path, false, Encoding.UTF8);
 
-        WriteHeader(sw, CodecStrings.EncodingReportTitle);
-        sw.WriteLine(MapField(CodecStrings.MapFileName, fileName));
-        sw.WriteLine(MapField(CodecStrings.MapSize,
+        WriteHeader(sw, EncodingIndent, CodecStrings.EncodingReportTitle);
+        sw.WriteLine(MapField(EncodingIndent, CodecStrings.MapFileName, fileName));
+        sw.WriteLine(MapField(EncodingIndent, CodecStrings.MapSize,
             $"{stats.FileSize:N0} {CodecStrings.MapBytesUnit}"));
         // Real* — реальные хеши; fallback на значение «на проводе»
         // помечается «*» (в режиме «с секретом» оно защищено)
-        sw.WriteLine(MapField(CodecStrings.MapSha256,
+        sw.WriteLine(MapField(EncodingIndent, CodecStrings.MapSha256,
             Hex(stats.RealSha256 ?? stats.Sha256) + (stats.RealSha256 is null ? "*" : "")));
 
         if (stats.SignaturePackets512)
-            WriteSha512(sw, stats.RealSha512 ?? stats.Sha512!, stats.RealSha512 is null);
+            WriteSha512(sw, EncodingIndent, stats.RealSha512 ?? stats.Sha512!, stats.RealSha512 is null);
 
-        sw.WriteLine(MapField("N (data)", $"{stats.DataCount}"));
-        sw.WriteLine(MapField("M (ECC)", $"{stats.EccCount}"));
-        sw.WriteLine(MapField(CodecStrings.MapHeadersCount, $"{stats.HeaderCopies}"));
-        sw.WriteLine(MapField(CodecStrings.MapSignaturesCount, $"{stats.SignatureCopies}"));
-        sw.WriteLine(MapField(CodecStrings.MapPackets, $"{stats.TotalPackets}"));
+        sw.WriteLine(MapField(EncodingIndent, "N (data)", $"{stats.DataCount}"));
+        sw.WriteLine(MapField(EncodingIndent, "M (ECC)", $"{stats.EccCount}"));
+        sw.WriteLine(MapField(EncodingIndent, CodecStrings.MapHeadersCount, $"{stats.HeaderCopies}"));
+        sw.WriteLine(MapField(EncodingIndent, CodecStrings.MapSignaturesCount, $"{stats.SignatureCopies}"));
+        sw.WriteLine(MapField(EncodingIndent, CodecStrings.MapPackets, $"{stats.TotalPackets}"));
     }
 
     // ── Отчёт декодирования ─────────────────────────────────────────────────
@@ -113,9 +119,9 @@ public static class CodecReport
 
         using var sw = new StreamWriter(path, false, Encoding.UTF8);
 
-        WriteHeader(sw, CodecStrings.DecodingReportTitle);
-        sw.WriteLine(MapField(CodecStrings.MapFileName, slot.Header.FileName));
-        sw.WriteLine(MapField(CodecStrings.MapSize,
+        WriteHeader(sw, DecodingIndent, CodecStrings.DecodingReportTitle);
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapFileName, slot.Header.FileName));
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapSize,
             $"{slot.Header.FileSize:N0} {CodecStrings.MapBytesUnit}"));
 
         // Реальные сигнатуры пересчитываются по потоку в ОЗУ: значения
@@ -125,37 +131,43 @@ public static class CodecReport
             ? Sha256Compact.HashData(content)
             : slot.Header.Sha256;
         var sha256Mark = content is null && hashSecretUsed ? "*" : "";
-        sw.WriteLine(MapField(CodecStrings.MapSha256, Hex(realSha256) + sha256Mark));
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapSha256, Hex(realSha256) + sha256Mark));
 
         if (signatureCheckActive && content is not null)
-            WriteSha512(sw, Sha512Compact.HashData(content));
+            WriteSha512(sw, DecodingIndent, Sha512Compact.HashData(content));
 
-        sw.WriteLine(MapField(CodecStrings.MapHeadersCount, $"{slot.HeaderReceptionCount}"));
-        sw.WriteLine(MapField(CodecStrings.MapSignaturesCount, $"{signaturePacketCount}"));
-        sw.WriteLine(MapField("N (data)", $"{slot.DataVolumeCount}"));
-        sw.WriteLine(MapField("M (ECC)", $"{slot.EccCount}"));
-        sw.WriteLine(MapField(CodecStrings.MapTotal, $"{total}"));
-        sw.WriteLine(MapField(CodecStrings.MapPresent, $"{present}"));
-        sw.WriteLine(MapField(CodecStrings.MapMissing, $"{missing}"));
-        sw.WriteLine(MapField(CodecStrings.MapCoverage, $"{coverage:F2}%"));
-        sw.WriteLine("         ────────────────────────────────────────────────────────────────");
-        sw.WriteLine($"         {CodecStrings.MapLegend}");
-        sw.WriteLine("         ────────────────────────────────────────────────────────────────");
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapHeadersCount, $"{slot.HeaderReceptionCount}"));
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapSignaturesCount, $"{signaturePacketCount}"));
+        sw.WriteLine(MapField(DecodingIndent, "N (data)", $"{slot.DataVolumeCount}"));
+        sw.WriteLine(MapField(DecodingIndent, "M (ECC)", $"{slot.EccCount}"));
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapTotal, $"{total}"));
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapPresent, $"{present}"));
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapMissing, $"{missing}"));
+        sw.WriteLine(MapField(DecodingIndent, CodecStrings.MapCoverage, $"{coverage:F2}%"));
+        sw.WriteLine(DecodingIndent + new string('─', ColumnsPerRow));
+        sw.WriteLine(DecodingIndent + CodecStrings.MapLegend);
+        sw.WriteLine(DecodingIndent + new string('─', ColumnsPerRow));
         sw.WriteLine();
 
         if (total == 0)
         {
-            sw.WriteLine("  " + CodecStrings.MapEmpty);
+            sw.WriteLine(DecodingIndent + CodecStrings.MapEmpty);
             return;
         }
 
         var idxWidth = Math.Max(7, total.ToString().Length);
+
+        // Ячейки карты выравниваются на колонку отступа отчёта (как
+        // разделители и легенда): ведущий сдвиг строки компенсирует
+        // ширину колонки индекса и зазор « │».
+        var rowLead = Math.Max(0, DecodingIndent.Length - idxWidth - 2);
 
         for (var row = 0; row * ColumnsPerRow < total; row++)
         {
             var start = row * ColumnsPerRow;
             var end = Math.Min(start + ColumnsPerRow, total);
 
+            sw.Write(new string(' ', rowLead));
             sw.Write(start.ToString().PadLeft(idxWidth));
             sw.Write(" │");
 
@@ -175,41 +187,45 @@ public static class CodecReport
     // ── Служебные ───────────────────────────────────────────────────────────
 
     // Шапка отчёта: титул в рамке из двойных линий.
-    private static void WriteHeader(StreamWriter sw, string title)
+    private static void WriteHeader(StreamWriter sw, string indent, string title)
     {
-        sw.WriteLine("         ════════════════════════════════════════════════════════════════");
-        sw.WriteLine($"         {title}");
-        sw.WriteLine("         ════════════════════════════════════════════════════════════════");
+        sw.WriteLine(indent + new string('═', 64));
+        sw.WriteLine(indent + title);
+        sw.WriteLine(indent + new string('═', 64));
     }
 
     // SHA-512 двумя строками по 64 hex-символа: продолжение выровнено
     // под значением SHA-256, расположенным выше. Значение «с секретом»
     // помечается «*» в конце второй строки.
-    private static void WriteSha512(StreamWriter sw, byte[] sha512, bool marked = false)
+    private static void WriteSha512(StreamWriter sw, string indent, byte[] sha512, bool marked = false)
     {
         var hex = Hex(sha512);
-        sw.WriteLine(MapField(CodecStrings.MapSha512, hex[..64]));
-        sw.WriteLine("         " + new string(' ', LabelWidth + 3) + hex[64..] + (marked ? "*" : ""));
+        sw.WriteLine(MapField(indent, CodecStrings.MapSha512, hex[..64]));
+        sw.WriteLine(indent + new string(' ', LabelWidth + 3) + hex[64..] + (marked ? "*" : ""));
     }
 
     /// <summary>
-    /// Контрольная сумма потока в формате sha256sum: файл
-    /// «путь потока» + «.sha256» со строкой
-    /// «hex(SHA-256)␣␣имя файла». Пишется после декодирования рядом
-    /// с восстановленным файлом.
+    /// Контрольная сумма восстановленного файла в формате sha256sum:
+    /// файл «путь» + «.sha256» со строкой «hex(SHA-256)␣␣имя файла».
+    /// Пишется после декодирования рядом с восстановленным файлом
+    /// и проверяется внешней утилитой (sha256sum -c).
     /// </summary>
-    /// <param name="streamPath">Путь файла потока.</param>
-    public static void WriteSha256Sidecar(string streamPath)
+    /// <param name="filePath">Путь восстановленного файла.</param>
+    /// <param name="content">Собранное содержимое файла.</param>
+    public static void WriteSha256Sidecar(string filePath, byte[] content)
     {
-        var hash = Sha256Compact.HashData(File.ReadAllBytes(streamPath));
+        var hash = Sha256Compact.HashData(content);
         File.WriteAllText(
-            streamPath + ".sha256",
-            Hex(hash) + "  " + Path.GetFileName(streamPath) + "\n");
+            filePath + ".sha256",
+            Hex(hash) + "  " + Path.GetFileName(filePath) + "\n");
     }
 
-    /// <summary>Строка отчёта «Метка : значение» с выравниванием меток.</summary>
-    private static string MapField(string label, string value) =>
-        "         " + label.PadRight(LabelWidth) + " : " + value;
+    /// <summary>
+    /// Строка отчёта «Метка : значение» с выравниванием меток.
+    /// Отступ: 4 пробела в отчёте кодирования, 9 — в отчёте декодирования.
+    /// </summary>
+    private static string MapField(string indent, string label, string value) =>
+        indent + label.PadRight(LabelWidth) + " : " + value;
 
     /// <summary>Байты → hex-строка нижнего регистра.</summary>
     private static string Hex(byte[] bytes) =>

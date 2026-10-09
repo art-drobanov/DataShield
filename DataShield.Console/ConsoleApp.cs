@@ -289,13 +289,12 @@ public sealed class ConsoleApp(IConsoleStrings strings)
             // Метка отчёта выравнивается под SHA-256/строку восстановления
             var reportPrefix = strings.ReportLineFormat[..strings.ReportLineFormat.IndexOf('{')].TrimEnd();
             System.Console.WriteLine("    " + reportPrefix.PadRight(subWidth) + reportPath);
+
+            // Контрольная сумма восстановленного файла (sha256sum) —
+            // рядом с ним: «файл».sha256
+            CodecReport.WriteSha256Sidecar(outputPath, content);
             restored++;
         }
-
-        // Контрольная сумма принятого потока (sha256sum) — рядом
-        // с восстановленным файлом: «поток».sha256
-        if (restored > 0)
-            CodecReport.WriteSha256Sidecar(inputPath);
 
         System.Console.WriteLine();
         System.Console.WriteLine(restored > 0

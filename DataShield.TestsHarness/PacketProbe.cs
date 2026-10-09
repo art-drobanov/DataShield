@@ -9,17 +9,19 @@ namespace DataShield.TestsHarness;
 /// <summary>
 /// Инструменты анализа пакетов: распознавание заголовков и корректных секторов
 /// (обе схемы хеширования), извлечение H5, подделка сектора с пересчётом хеша
-/// (коллизия версий).
+/// (коллизия версий). Секрет хеширования передаётся явным параметром
+/// (hashSecret) — для потоков, закодированных с секретом.
 /// </summary>
 public static class PacketProbe
 {
     /// <summary>Пакет является заголовком: H5 совпадает с Trunc24(SHA-256(H1–H4)).</summary>
-    public static bool IsHeader(ReadOnlySpan<byte> packet) =>
-        PacketHasher.VerifyHeaderPacket(packet);
+    public static bool IsHeader(ReadOnlySpan<byte> packet, string? hashSecret = null) =>
+        PacketHasher.VerifyHeaderPacket(packet, hashSecret);
 
     /// <summary>Пакет является корректным сектором: D3 сходится с сидом H5.</summary>
-    public static bool IsValidSector(ReadOnlySpan<byte> packet, byte[] headerHash) =>
-        PacketHasher.VerifySectorPacket(packet, headerHash);
+    public static bool IsValidSector(
+        ReadOnlySpan<byte> packet, byte[] headerHash, string? hashSecret = null) =>
+        PacketHasher.VerifySectorPacket(packet, headerHash, hashSecret);
 
     /// <summary>
     /// Пакет является корректным сектором заданной схемы: Classic — D3
@@ -28,25 +30,25 @@ public static class PacketProbe
     /// </summary>
     public static bool IsValidSector(
         ReadOnlySpan<byte> packet, byte[] headerHash,
-        SectorScheme scheme, int sectorCount) =>
+        SectorScheme scheme, int sectorCount, string? hashSecret = null) =>
         scheme == SectorScheme.VirtualIndex
             ? sectorCount > 0 &&
-              VirtualIndexHasher.TryVerifyPacket(packet, headerHash, sectorCount, 0, out _)
-            : PacketHasher.VerifySectorPacket(packet, headerHash);
+              VirtualIndexHasher.TryVerifyPacket(packet, headerHash, sectorCount, 0, out _, hashSecret)
+            : PacketHasher.VerifySectorPacket(packet, headerHash, hashSecret);
 
     /// <summary>Найти первый пакет заголовка в потоке пакетов.</summary>
-    public static byte[] FindHeader(IReadOnlyList<byte[]> packets)
+    public static byte[] FindHeader(IReadOnlyList<byte[]> packets, string? hashSecret = null)
     {
         foreach (var packet in packets)
-            if (IsHeader(packet))
+            if (IsHeader(packet, hashSecret))
                 return packet;
         throw new InvalidOperationException("В потоке нет пакета заголовка.");
     }
 
     /// <summary>H5 — хеш заголовка, сид для хеша секторов данных.</summary>
-    public static byte[] HeaderHash(ReadOnlySpan<byte> headerPacket) =>
+    public static byte[] HeaderHash(ReadOnlySpan<byte> headerPacket, string? hashSecret = null) =>
         PacketHasher.ComputeHeaderHash(
-            headerPacket[..PacketFormat.HeaderContentSize]);
+            headerPacket[..PacketFormat.HeaderContentSize], hashSecret);
 
     /// <summary>Номер сектора (D1, 2 байта LE).</summary>
     public static int SectorNumber(ReadOnlySpan<byte> packet) =>
@@ -73,8 +75,9 @@ public static class PacketProbe
     /// это создаёт коллизию версий сектора в приёмнике.
     /// </summary>
     public static byte[] ForgeSectorVariant(
-        ReadOnlySpan<byte> sector, byte[] headerHash, Random rng) =>
-        ForgeSectorVariant(sector, headerHash, rng, SectorScheme.Classic, 0);
+        ReadOnlySpan<byte> sector, byte[] headerHash, Random rng,
+        string? hashSecret = null) =>
+        ForgeSectorVariant(sector, headerHash, rng, SectorScheme.Classic, 0, hashSecret);
 
     /// <summary>
     /// Подделка сектора заданной схемы: тот же номер тома, искажённый payload,
@@ -85,14 +88,14 @@ public static class PacketProbe
     /// </summary>
     public static byte[] ForgeSectorVariant(
         ReadOnlySpan<byte> sector, byte[] headerHash, Random rng,
-        SectorScheme scheme, int sectorCount)
+        SectorScheme scheme, int sectorCount, string? hashSecret = null)
     {
         if (scheme == SectorScheme.VirtualIndex)
         {
             // Истинный индекс восстанавливается перебором; подделка пересобирается
             // с тем же индексом — приёмник примет её вместо оригинала.
             if (!VirtualIndexHasher.TryVerifyPacket(
-                    sector, headerHash, sectorCount, 0, out var index))
+                    sector, headerHash, sectorCount, 0, out var index, hashSecret))
                 throw new InvalidOperationException(
                     "Подделка VirtualIndex: пакет не является корректным сектором.");
 
@@ -110,7 +113,7 @@ public static class PacketProbe
             }
 
             VirtualIndexHasher.BuildPacketInto(
-                forged.AsSpan(0, PacketFormat.PayloadSize), index, headerHash, forged);
+                forged.AsSpan(0, PacketFormat.PayloadSize), index, headerHash, forged, hashSecret);
             return forged;
         }
 
@@ -127,7 +130,7 @@ public static class PacketProbe
         }
 
         var hash = PacketHasher.ComputeSectorHash(
-            classic.AsSpan(0, PacketFormat.SectorContentSize), headerHash);
+            classic.AsSpan(0, PacketFormat.SectorContentSize), headerHash, hashSecret);
         hash.AsSpan().CopyTo(classic.AsSpan(PacketFormat.SectorHashOffset));
         return classic;
     }

@@ -7,9 +7,9 @@
     http://www.apache.org/licenses/LICENSE-2.0
 
     Unless required by applicable law Or agreed To In writing, software
-    distributed under the License Is distributed On An "AS IS" BASIS,
-    WITHOUT WARRANTIES OR CONDITIONS Of ANY KIND, either express Or implied.
-    See the License For the specific language governing permissions And
+    distributed under the License is distributed on An "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions And
     limitations under the License.
 */
 
@@ -17,70 +17,57 @@ using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text;
 
-public static class Sha512Secure
+public static class Sha512Secure // 77bb5d5a58574e6d37f1b93f096d908c4fcb54e457c92d5a7c3dd8cff6242668
 {
-    private sealed class SecretScope
-    {
-        public readonly string Text;
-        public readonly byte[]? Bytes;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static byte[] HashData(byte[] data, string? secret) => HashData(data.AsSpan(), secret);
 
-        public SecretScope(string text, byte[]? bytes)
+    public static byte[] HashData(ReadOnlySpan<byte> data, string? secret)
+    {
+        byte[] hash = new byte[64];
+        HashData(data, secret, hash);
+        return hash;
+    }
+
+    public static void HashData(ReadOnlySpan<byte> data, string? secret, Span<byte> hash)
+    {
+        if (hash.Length < 64)
+            throw new ArgumentException(nameof(hash));
+        if (string.IsNullOrEmpty(secret))
         {
-            Text = text;
-            Bytes = bytes;
+            Sha512Compact.HashData(data, hash);
+            return;
         }
-    }
-
-    private static readonly AsyncLocal<SecretScope?> Scope = new();
-
-    public static string? HashSecret
-    {
-        get => Scope.Value?.Text;
-        set => Scope.Value = string.IsNullOrEmpty(value)
-            ? null
-            : new SecretScope(value, Encoding.UTF8.GetBytes(value));
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static byte[] HashData(byte[] data) => HashData(data.AsSpan());
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static byte[] HashData(ReadOnlySpan<byte> data)
-    {
-        byte[] hash = new byte[64]; HashData(data, hash); return hash;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void HashData(ReadOnlySpan<byte> data, Span<byte> hash)
-    {
-        if (hash.Length < 64) throw new ArgumentException(nameof(hash));
-        var secret = Scope.Value?.Bytes;
-        if (secret is null || secret.Length == 0) { Sha512Compact.HashData(data, hash); return; }
+        byte[] secretBytes = Encoding.UTF8.GetBytes(secret);
         byte[]? rented = null;
-        var total = secret.Length + data.Length;
+        int total = secretBytes.Length + data.Length;
         Span<byte> input = total <= 8192
             ? stackalloc byte[8192]
             : rented = ArrayPool<byte>.Shared.Rent(total);
         try
         {
-            secret.CopyTo(input); data.CopyTo(input[secret.Length..]);
+            secretBytes.CopyTo(input);
+            data.CopyTo(input[secretBytes.Length..]);
             Sha512Compact.HashData(input[..total], hash);
         }
-        finally { if (rented is not null) ArrayPool<byte>.Shared.Return(rented); }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool Test()
     {
-        if (!Sha512Compact.Test()) return false;
-        var secret = Scope.Value?.Bytes;
-        if (secret is null || secret.Length == 0) return true;
-        var concat = new byte[secret.Length + 3];
-        secret.CopyTo(concat, 0);
-        concat[^3] = 0x61; concat[^2] = 0x62; concat[^1] = 0x63;
-        Span<byte> h1 = stackalloc byte[64]; Span<byte> h2 = stackalloc byte[64];
-        HashData(concat.AsSpan(secret.Length), h1);
-        Sha512Compact.HashData(concat, h2);
-        return h1.SequenceEqual(h2);
+        if (!Sha512Compact.Test())
+            return false;
+        byte[] secretBytes = Encoding.UTF8.GetBytes("secret");
+        byte[] data = [0x61, 0x62, 0x63];
+        byte[] concat = [.. secretBytes, .. data];
+        Span<byte> salted = stackalloc byte[64];
+        Span<byte> expected = stackalloc byte[64];
+        HashData(data, "secret", salted);
+        Sha512Compact.HashData(concat, expected);
+        return salted.SequenceEqual(expected);
     }
 }

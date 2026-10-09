@@ -23,13 +23,14 @@ public static class PacketDamage
     /// </summary>
     public static List<int> SectorIndices(
         IReadOnlyList<byte[]> packets, byte[] headerHash,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
         var result = new List<int>();
         for (var i = 0; i < packets.Count; i++)
         {
-            if (PacketProbe.IsHeader(packets[i])) continue;
-            if (!PacketProbe.IsValidSector(packets[i], headerHash, scheme, sectorCount)) continue;
+            if (PacketProbe.IsHeader(packets[i], hashSecret)) continue;
+            if (!PacketProbe.IsValidSector(packets[i], headerHash, scheme, sectorCount, hashSecret)) continue;
             result.Add(i);
         }
         return result;
@@ -50,9 +51,10 @@ public static class PacketDamage
     /// </summary>
     public static int CorruptSectors(
         List<byte[]> packets, int maxCount, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var candidates = SectorIndices(packets, headerHash, scheme, sectorCount);
+        var candidates = SectorIndices(packets, headerHash, scheme, sectorCount, hashSecret);
         RandomInput.Shuffle(candidates, rng);
 
         var corrupted = Math.Min(maxCount, candidates.Count);
@@ -72,9 +74,10 @@ public static class PacketDamage
     /// <summary>Удаление до <paramref name="maxCount"/> корректных секторов.</summary>
     public static int RemoveSectors(
         List<byte[]> packets, int maxCount, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var candidates = SectorIndices(packets, headerHash, scheme, sectorCount);
+        var candidates = SectorIndices(packets, headerHash, scheme, sectorCount, hashSecret);
         RandomInput.Shuffle(candidates, rng);
 
         var selected = candidates
@@ -94,7 +97,8 @@ public static class PacketDamage
     /// не менее двух копий заголовка. Возвращает фактические потери.
     /// </summary>
     public static int TruncateTail(
-        List<byte[]> packets, int maxSectorLoss, byte[] headerHash, Random rng)
+        List<byte[]> packets, int maxSectorLoss, byte[] headerHash, Random rng,
+        string? hashSecret = null)
     {
         if (packets.Count < 4) return 0;
 
@@ -105,13 +109,13 @@ public static class PacketDamage
         {
             var lost = 0;
             for (var i = packets.Count - drop; i < packets.Count; i++)
-                if (!PacketProbe.IsHeader(packets[i])) lost++;
+                if (!PacketProbe.IsHeader(packets[i], hashSecret)) lost++;
 
             if (lost > maxSectorLoss) continue;
 
             var headersKept = 0;
             for (var i = 0; i < packets.Count - drop; i++)
-                if (PacketProbe.IsHeader(packets[i]))
+                if (PacketProbe.IsHeader(packets[i], hashSecret))
                     headersKept++;
 
             if (headersKept < 2) continue;
@@ -132,14 +136,15 @@ public static class PacketDamage
     /// </summary>
     public static bool CorruptSilently(
         List<byte[]> packets, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var candidates = SectorIndices(packets, headerHash, scheme, sectorCount);
+        var candidates = SectorIndices(packets, headerHash, scheme, sectorCount, hashSecret);
         if (candidates.Count == 0) return false;
 
         var index = candidates[rng.Next(candidates.Count)];
         packets[index] = PacketProbe.ForgeSectorVariant(
-            packets[index], headerHash, rng, scheme, sectorCount);
+            packets[index], headerHash, rng, scheme, sectorCount, hashSecret);
         return true;
     }
 
@@ -150,9 +155,10 @@ public static class PacketDamage
     /// </summary>
     public static bool InjectCollisionPromote(
         List<byte[]> packets, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var forged = PickForgeable(packets, headerHash, rng, scheme, sectorCount, out var correct);
+        var forged = PickForgeable(packets, headerHash, rng, scheme, sectorCount, hashSecret, out var correct);
         if (forged is null) return false;
 
         packets.Insert(rng.Next(packets.Count + 1), forged);
@@ -168,9 +174,10 @@ public static class PacketDamage
     /// </summary>
     public static bool InjectCollisionTie(
         List<byte[]> packets, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var forged = PickForgeable(packets, headerHash, rng, scheme, sectorCount, out var correct);
+        var forged = PickForgeable(packets, headerHash, rng, scheme, sectorCount, hashSecret, out var correct);
         if (forged is null) return false;
 
         var correctCount = CountCopies(packets, correct);
@@ -180,7 +187,7 @@ public static class PacketDamage
         {
             var variant = f == 0
                 ? forged
-                : PacketProbe.ForgeSectorVariant(correct, headerHash, rng, scheme, sectorCount);
+                : PacketProbe.ForgeSectorVariant(correct, headerHash, rng, scheme, sectorCount, hashSecret);
             for (var c = 0; c < correctCount; c++)
                 packets.Insert(rng.Next(packets.Count + 1), variant);
         }
@@ -196,9 +203,10 @@ public static class PacketDamage
     /// </summary>
     public static bool InjectCollisionKill(
         List<byte[]> packets, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var forged = PickForgeable(packets, headerHash, rng, scheme, sectorCount, out var correct);
+        var forged = PickForgeable(packets, headerHash, rng, scheme, sectorCount, hashSecret, out var correct);
         if (forged is null) return false;
 
         var copies = CountCopies(packets, correct) + 1;
@@ -213,9 +221,9 @@ public static class PacketDamage
     /// <summary>Выбрать случайный сектор и изготовить для него подделку.</summary>
     private static byte[]? PickForgeable(
         List<byte[]> packets, byte[] headerHash, Random rng,
-        SectorScheme scheme, int sectorCount, out byte[] correct)
+        SectorScheme scheme, int sectorCount, string? hashSecret, out byte[] correct)
     {
-        var candidates = SectorIndices(packets, headerHash, scheme, sectorCount);
+        var candidates = SectorIndices(packets, headerHash, scheme, sectorCount, hashSecret);
         if (candidates.Count == 0)
         {
             correct = Array.Empty<byte>();
@@ -223,7 +231,7 @@ public static class PacketDamage
         }
 
         correct = packets[candidates[rng.Next(candidates.Count)]];
-        return PacketProbe.ForgeSectorVariant(correct, headerHash, rng, scheme, sectorCount);
+        return PacketProbe.ForgeSectorVariant(correct, headerHash, rng, scheme, sectorCount, hashSecret);
     }
 
     /// <summary>Сколько копий пакета присутствует в потоке.</summary>

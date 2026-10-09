@@ -83,24 +83,25 @@ public static class DamageEngine
     /// <param name="overkillExtra">Повреждений сверх бюджета (ожидаемый отказ).</param>
     /// <param name="collisionKill">Подделка сектора побеждает (ожидаемый отказ).</param>
     /// <param name="sectorScheme">Схема хеширования секторов файла.</param>
+    /// <param name="hashSecret">Секрет хеширования операции (null/пустая — без секрета).</param>
     public static DamageResult Apply(
         IReadOnlyList<byte[]> packets, EncodeStats stats, OutputFormat format,
         Random rng, int overkillExtra = 0, bool collisionKill = false,
-        SectorScheme sectorScheme = SectorScheme.Classic)
+        SectorScheme sectorScheme = SectorScheme.Classic, string? hashSecret = null)
     {
-        var h5 = PacketProbe.HeaderHash(PacketProbe.FindHeader(packets));
+        var h5 = PacketProbe.HeaderHash(PacketProbe.FindHeader(packets, hashSecret), hashSecret);
         uint mask = 0;
         var ops = 0;
         var lost = 0;
 
         var damaged = DamagePackets(
             packets, stats.EccCount, stats.DataCount + stats.EccCount, h5, rng,
-            overkillExtra, collisionKill, sectorScheme, ref mask, ref lost, ref ops,
-            out var budget);
+            overkillExtra, collisionKill, sectorScheme, hashSecret,
+            ref mask, ref lost, ref ops, out var budget);
 
         // Рендер повреждённого пакета в куски заданного формата
         return format == OutputFormat.Binary
-            ? RenderBinary(damaged, rng, ref budget, ref mask, ref lost, ref ops)
+            ? RenderBinary(damaged, rng, hashSecret, ref budget, ref mask, ref lost, ref ops)
             : RenderText(damaged, rng, ref mask, ref lost, ref ops);
     }
 
@@ -118,7 +119,7 @@ public static class DamageEngine
     public static DamageResult ApplyMultiFile(
         IReadOnlyList<(IReadOnlyList<byte[]> Packets, EncodeStats Stats)> files,
         Random rng, int overkillFileIndex = -1,
-        IReadOnlyList<SectorScheme>? schemes = null)
+        IReadOnlyList<SectorScheme>? schemes = null, string? hashSecret = null)
     {
         uint mask = DamageBits.MultiFile;
         var ops = 1;
@@ -130,7 +131,7 @@ public static class DamageEngine
         for (var f = 0; f < files.Count; f++)
         {
             var (packets, stats) = files[f];
-            var h5 = PacketProbe.HeaderHash(PacketProbe.FindHeader(packets));
+            var h5 = PacketProbe.HeaderHash(PacketProbe.FindHeader(packets, hashSecret), hashSecret);
             var overkill = f == overkillFileIndex ? 1 + rng.Next(2) : 0;
             var scheme = schemes is null || f >= schemes.Count
                 ? SectorScheme.Classic
@@ -138,8 +139,8 @@ public static class DamageEngine
 
             var damaged = DamagePackets(
                 packets, stats.EccCount, stats.DataCount + stats.EccCount, h5, rng,
-                overkill, collisionKill: false, scheme, ref mask, ref lost, ref ops,
-                out _);
+                overkill, collisionKill: false, scheme, hashSecret,
+                ref mask, ref lost, ref ops, out _);
 
             sources.AddRange(damaged);
             lines.AddRange(damaged.Select(p => Convert.ToBase64String(p)));
@@ -238,7 +239,7 @@ public static class DamageEngine
     private static List<byte[]> DamagePackets(
         IReadOnlyList<byte[]> packets, int eccBudget, int totalVolumes, byte[] h5,
         Random rng, int overkillExtra, bool collisionKill, SectorScheme scheme,
-        ref uint mask, ref int lost, ref int ops, out int budget)
+        string? hashSecret, ref uint mask, ref int lost, ref int ops, out int budget)
     {
         var list = packets.ToList();
         budget = eccBudget;
@@ -257,7 +258,7 @@ public static class DamageEngine
         if (budget > 0)
         {
             var corrupted = PacketDamage.CorruptSectors(
-                list, Math.Min(budget, 1 + rng.Next(3)), h5, rng, scheme, totalVolumes);
+                list, Math.Min(budget, 1 + rng.Next(3)), h5, rng, scheme, totalVolumes, hashSecret);
             if (corrupted > 0)
             {
                 budget -= corrupted;
@@ -271,7 +272,7 @@ public static class DamageEngine
         if (budget > 0)
         {
             var removed = PacketDamage.RemoveSectors(
-                list, Math.Min(budget, 1 + rng.Next(2)), h5, rng, scheme, totalVolumes);
+                list, Math.Min(budget, 1 + rng.Next(2)), h5, rng, scheme, totalVolumes, hashSecret);
             if (removed > 0)
             {
                 budget -= removed;
@@ -284,7 +285,7 @@ public static class DamageEngine
         // Обрезка хвоста
         if (budget > 0 && Roll(rng, 0.35))
         {
-            var tailLost = PacketDamage.TruncateTail(list, budget, h5, rng);
+            var tailLost = PacketDamage.TruncateTail(list, budget, h5, rng, hashSecret);
             if (tailLost > 0)
             {
                 budget -= tailLost;
@@ -305,7 +306,7 @@ public static class DamageEngine
             eccBudget - budget <= LightPacketLosses &&
             Roll(rng, 0.35))
         {
-            if (PacketDamage.CorruptSilently(list, h5, rng, scheme, totalVolumes))
+            if (PacketDamage.CorruptSilently(list, h5, rng, scheme, totalVolumes, hashSecret))
             {
                 budget--;
                 lost++;
@@ -317,9 +318,9 @@ public static class DamageEngine
         // Повреждения сверх бюджета — ожидаемый отказ сборки
         if (overkillExtra > 0)
         {
-            var extra = PacketDamage.RemoveSectors(list, overkillExtra, h5, rng, scheme, totalVolumes);
+            var extra = PacketDamage.RemoveSectors(list, overkillExtra, h5, rng, scheme, totalVolumes, hashSecret);
             if (extra == 0)
-                extra = PacketDamage.CorruptSectors(list, overkillExtra, h5, rng, scheme, totalVolumes);
+                extra = PacketDamage.CorruptSectors(list, overkillExtra, h5, rng, scheme, totalVolumes, hashSecret);
             lost += extra;
             mask |= DamageBits.Overkill;
             ops++;
@@ -328,7 +329,7 @@ public static class DamageEngine
         // Коллизии версий
         if (collisionKill)
         {
-            if (PacketDamage.InjectCollisionKill(list, h5, rng, scheme, totalVolumes))
+            if (PacketDamage.InjectCollisionKill(list, h5, rng, scheme, totalVolumes, hashSecret))
             {
                 mask |= DamageBits.CollisionKill;
                 ops++;
@@ -337,8 +338,8 @@ public static class DamageEngine
         else if (overkillExtra == 0 && Roll(rng, 0.45))
         {
             var injected = Roll(rng, 0.4)
-                ? PacketDamage.InjectCollisionTie(list, h5, rng, scheme, totalVolumes)
-                : PacketDamage.InjectCollisionPromote(list, h5, rng, scheme, totalVolumes);
+                ? PacketDamage.InjectCollisionTie(list, h5, rng, scheme, totalVolumes, hashSecret)
+                : PacketDamage.InjectCollisionPromote(list, h5, rng, scheme, totalVolumes, hashSecret);
             if (injected)
             {
                 mask |= DamageBits.Collision;
@@ -404,7 +405,7 @@ public static class DamageEngine
     /// затем применение и, возможно, разрез на два прохода.
     /// </summary>
     private static DamageResult RenderBinary(
-        List<byte[]> packets, Random rng,
+        List<byte[]> packets, Random rng, string? hashSecret,
         ref int budget, ref uint mask, ref int lost, ref int ops)
     {
         // Куски в разных форматах: половина пакетов бинарно, половина текстом
@@ -420,7 +421,7 @@ public static class DamageEngine
         if (Roll(rng, 0.35))
         {
             var lossy = budget >= 1 && Roll(rng, 0.6);
-            if (BinaryDamage.PlanDesync(stream, rng, lossy) is { } desync)
+            if (BinaryDamage.PlanDesync(stream, rng, lossy, hashSecret) is { } desync)
             {
                 plan.Add(desync);
                 if (lossy)
@@ -437,7 +438,7 @@ public static class DamageEngine
         if (Roll(rng, 0.3))
         {
             var lossy = budget >= 1 && Roll(rng, 0.5);
-            if (BinaryDamage.PlanTextGap(stream, rng, lossy) is { } textGap)
+            if (BinaryDamage.PlanTextGap(stream, rng, lossy, hashSecret) is { } textGap)
             {
                 plan.Add(textGap);
                 if (lossy)
@@ -454,7 +455,7 @@ public static class DamageEngine
         if (Roll(rng, 0.4))
         {
             var lossy = budget >= 1 && Roll(rng, 0.6);
-            if (BinaryDamage.PlanFragment(stream, rng, lossy) is { } fragment)
+            if (BinaryDamage.PlanFragment(stream, rng, lossy, hashSecret) is { } fragment)
             {
                 plan.Add(fragment);
                 if (lossy)

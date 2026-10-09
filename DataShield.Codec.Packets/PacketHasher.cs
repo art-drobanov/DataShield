@@ -13,14 +13,14 @@ namespace DataShield.Codec.Packets;
 /// срабатывание классификации 2⁻¹⁹². D3 сектора — Trunc9(SHA-256(H5 ‖ D1 ‖ D2)):
 /// привязка к заголовку файла, без него проверка невозможна.
 ///
-/// Расчёт идёт через <see cref="Sha256Secure"/>: в режиме «с секретом»
-/// (статическое свойство <c>Sha256Secure.HashSecret</c>) защищены все
-/// значения «на проводе»; без секрета поведение идентично Sha256Compact.
+/// Расчёт идёт через <see cref="Sha256Secure"/>: секрет передаётся явным
+/// параметром (hashSecret) — с секретом защищены все значения «на проводе»;
+/// без секрета (null/пустая строка) поведение идентично Sha256Compact.
 /// </summary>
 public static class PacketHasher
 {
     /// <summary>H5: Trunc24(SHA-256(содержимое заголовка)). Вход — ровно 51 байт.</summary>
-    public static byte[] ComputeHeaderHash(ReadOnlySpan<byte> headerContent)
+    public static byte[] ComputeHeaderHash(ReadOnlySpan<byte> headerContent, string? hashSecret = null)
     {
         if (headerContent.Length != PacketFormat.HeaderContentSize)
             throw new ArgumentException(
@@ -28,14 +28,15 @@ public static class PacketHasher
                 nameof(headerContent));
 
         Span<byte> hash = stackalloc byte[32];
-        Sha256Secure.HashData(headerContent, hash);
+        Sha256Secure.HashData(headerContent, hashSecret, hash);
         return hash[..PacketFormat.HeaderHashSize].ToArray();
     }
 
     /// <summary>D3: Trunc9(SHA-256(headerHash ‖ содержимое сектора)). Входы — 24 и 66 байт.</summary>
     public static byte[] ComputeSectorHash(
         ReadOnlySpan<byte> sectorContent,
-        ReadOnlySpan<byte> headerHash)
+        ReadOnlySpan<byte> headerHash,
+        string? hashSecret = null)
     {
         if (sectorContent.Length != PacketFormat.SectorContentSize)
             throw new ArgumentException(
@@ -48,7 +49,7 @@ public static class PacketHasher
                 nameof(headerHash));
 
         Span<byte> hash = stackalloc byte[32];
-        ComputeSectorHashInto(sectorContent, headerHash, hash);
+        ComputeSectorHashInto(sectorContent, headerHash, hash, hashSecret);
         return hash[..PacketFormat.SectorHashSize].ToArray();
     }
 
@@ -56,7 +57,7 @@ public static class PacketHasher
     /// Полный пакет (75 байт) является заголовком: H5 совпадает с
     /// Trunc24(SHA-256(H1–H4)).
     /// </summary>
-    public static bool VerifyHeaderPacket(ReadOnlySpan<byte> packet)
+    public static bool VerifyHeaderPacket(ReadOnlySpan<byte> packet, string? hashSecret = null)
     {
         if (packet.Length != PacketFormat.PacketSize)
             return false;
@@ -64,6 +65,7 @@ public static class PacketHasher
         Span<byte> hash = stackalloc byte[32];
         Sha256Secure.HashData(
             packet[..PacketFormat.HeaderContentSize],
+            hashSecret,
             hash);
 
         return hash[..PacketFormat.HeaderHashSize].SequenceEqual(
@@ -76,7 +78,8 @@ public static class PacketHasher
     /// </summary>
     public static bool VerifySectorPacket(
         ReadOnlySpan<byte> packet,
-        ReadOnlySpan<byte> headerHash)
+        ReadOnlySpan<byte> headerHash,
+        string? hashSecret = null)
     {
         if (packet.Length != PacketFormat.PacketSize ||
             headerHash.Length != PacketFormat.HeaderHashSize)
@@ -88,7 +91,8 @@ public static class PacketHasher
         ComputeSectorHashInto(
             packet[..PacketFormat.SectorContentSize],
             headerHash,
-            hash);
+            hash,
+            hashSecret);
 
         return hash[..PacketFormat.SectorHashSize].SequenceEqual(
             packet[PacketFormat.SectorHashOffset..]);
@@ -98,13 +102,14 @@ public static class PacketHasher
     private static void ComputeSectorHashInto(
         ReadOnlySpan<byte> sectorContent,
         ReadOnlySpan<byte> headerHash,
-        Span<byte> hash)
+        Span<byte> hash,
+        string? hashSecret)
     {
         Span<byte> input = stackalloc byte[
             PacketFormat.HeaderHashSize + PacketFormat.SectorContentSize]; // 90
 
         headerHash.CopyTo(input);
         sectorContent.CopyTo(input[PacketFormat.HeaderHashSize..]);
-        Sha256Secure.HashData(input, hash);
+        Sha256Secure.HashData(input, hashSecret, hash);
     }
 }

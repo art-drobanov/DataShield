@@ -59,7 +59,8 @@ public static class VirtualIndexHasher
         ReadOnlySpan<byte> payload,
         int sectorIndex,
         ReadOnlySpan<byte> headerHash,
-        Span<byte> hash)
+        Span<byte> hash,
+        string? hashSecret = null)
     {
         if (payload.Length != PacketFormat.PayloadSize)
             throw new ArgumentException(
@@ -91,7 +92,7 @@ public static class VirtualIndexHasher
         input[^2] = (byte)(sectorIndex & 0xFF);
         input[^1] = (byte)((sectorIndex >> 8) & 0xFF);
 
-        Sha256Secure.HashData(input, full);
+        Sha256Secure.HashData(input, hashSecret, full);
         full[..HashSize].CopyTo(hash);
     }
 
@@ -102,7 +103,8 @@ public static class VirtualIndexHasher
         ReadOnlySpan<byte> payload,
         int sectorIndex,
         ReadOnlySpan<byte> headerHash,
-        Span<byte> packet)
+        Span<byte> packet,
+        string? hashSecret = null)
     {
         if (packet.Length != PacketFormat.PacketSize)
             throw new ArgumentException(
@@ -114,7 +116,8 @@ public static class VirtualIndexHasher
             payload,
             sectorIndex,
             headerHash,
-            packet[HashOffset..]);
+            packet[HashOffset..],
+            hashSecret);
     }
 
     /// <summary>
@@ -136,12 +139,14 @@ public static class VirtualIndexHasher
     /// <param name="sectorCount">Число секторов файла K.</param>
     /// <param name="startCursor">Ожидаемый следующий индекс (курсор прихода).</param>
     /// <param name="sectorIndex">Найденный номер сектора при успехе.</param>
+    /// <param name="hashSecret">Секрет хеширования (null/пустая — без секрета).</param>
     public static bool TryVerifyPacket(
         ReadOnlySpan<byte> packet,
         ReadOnlySpan<byte> headerHash,
         int sectorCount,
         int startCursor,
-        out int sectorIndex)
+        out int sectorIndex,
+        string? hashSecret = null)
     {
         sectorIndex = 0;
 
@@ -162,7 +167,7 @@ public static class VirtualIndexHasher
         for (var step = 0; step < prefix; step++)
         {
             var idx = (int)((cursor + (uint)step) % (uint)sectorCount);
-            ComputeHashInto(payload, idx, headerHash, expected);
+            ComputeHashInto(payload, idx, headerHash, expected, hashSecret);
             if (expected.SequenceEqual(actual))
             {
                 sectorIndex = idx;
@@ -180,7 +185,7 @@ public static class VirtualIndexHasher
             for (var step = prefix; step < sectorCount; step++)
             {
                 var idx = (int)((cursor + (uint)step) % (uint)sectorCount);
-                ComputeHashInto(payload, idx, headerHash, expected);
+                ComputeHashInto(payload, idx, headerHash, expected, hashSecret);
                 if (expected.SequenceEqual(actual))
                 {
                     sectorIndex = idx;
@@ -212,7 +217,7 @@ public static class VirtualIndexHasher
             for (var step = from; step < to; step++)
             {
                 var idx = (int)((cursor + (uint)step) % (uint)sectorCount);
-                ComputeHashInto(payloadCopy, idx, hashSeed, probe);
+                ComputeHashInto(payloadCopy, idx, hashSeed, probe, hashSecret);
                 if (probe.AsSpan().SequenceEqual(actualCopy))
                 {
                     chunkMatch[chunk] = step;

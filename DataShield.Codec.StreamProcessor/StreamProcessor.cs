@@ -32,6 +32,9 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
     // Порог применимости схемы VirtualIndex: максимум N+M томов на слот
     private readonly int _virtualIndexSectorLimit;
 
+    // Секрет хеширования операции (null/пустая — без секрета)
+    private readonly string? _hashSecret;
+
     // Режим работы с сигнатурными пакетами SHA-512 (см. SignatureMode)
     private readonly SignatureMode _signatureMode;
 
@@ -127,12 +130,18 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
     /// влияния на сборку; Auto (по умолчанию) — расширенная проверка при
     /// приёме хотя бы одного сигнатурного пакета; Force — проверка всегда.
     /// </param>
+    /// <param name="hashSecret">
+    /// Секрет хеширования операции: должен совпадать с секретом
+    /// кодирования, иначе заголовки и секторы не опознаются.
+    /// null/пустая строка — обычный режим без секрета.
+    /// </param>
     public StreamProcessor(
         SectorVersionSearchOptions? searchOptions = null,
         int bufferSize = 1200,
         SectorScheme sectorScheme = SectorScheme.Classic,
         int virtualIndexSectorLimit = VirtualIndexHasher.DefaultSectorLimit,
-        SignatureMode signatureMode = SignatureMode.Auto)
+        SignatureMode signatureMode = SignatureMode.Auto,
+        string? hashSecret = null)
         : base(bufferSize)
     {
         if (!Enum.IsDefined(sectorScheme))
@@ -152,6 +161,7 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
         _sectorScheme = sectorScheme;
         _virtualIndexSectorLimit = virtualIndexSectorLimit;
         _signatureMode = signatureMode;
+        _hashSecret = hashSecret;
     }
 
     /// <summary>Все накопленные слоты приёма (снимок).</summary>
@@ -256,7 +266,7 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
         if (packet.Length != PacketFormat.PacketSize) return false;
 
         if (IsHeaderPacket(packet)) return true;
-        if (SignaturePacket.Verify(packet)) return true;
+        if (SignaturePacket.Verify(packet, _hashSecret)) return true;
 
         lock (_state)
         {
@@ -326,7 +336,7 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
         // Сигнатурный пакет не привязан к файлу и не влияет на дальнейший
         // парсинг: его блоб дополнительно проверяется путём секторов ниже,
         // ложная коллизия неопасна (критерий «любой из» на финале).
-        if (SignaturePacket.Verify(packet))
+        if (SignaturePacket.Verify(packet, _hashSecret))
         {
             AcceptSignature(packet);
             accepted = true;
@@ -381,14 +391,14 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
         var header = HeaderContent.ReadFrom(headerBytes);
         var headerHash = packet[PacketFormat.HeaderHashOffset..].ToArray();
 
-        var newSlot = new ReceptionSlot(headerBytes, header, headerHash, _searchOptions);
+        var newSlot = new ReceptionSlot(headerBytes, header, headerHash, _searchOptions, _hashSecret);
         _slots.Add(newSlot);
         return newSlot;
     }
 
     /// <summary>Пакет является заголовком (верификация автономного хеша заголовка).</summary>
-    private static bool IsHeaderPacket(ReadOnlySpan<byte> packet) =>
-        PacketHasher.VerifyHeaderPacket(packet);
+    private bool IsHeaderPacket(ReadOnlySpan<byte> packet) =>
+        PacketHasher.VerifyHeaderPacket(packet, _hashSecret);
 
     /// <summary>
     /// Чистый предикат (без побочных эффектов): пакет является сектором
@@ -407,21 +417,22 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
                 slot.HeaderHash,
                 slot.TotalVolumeCount,
                 slot.VirtualIndexCursor,
-                out _);
+                out _,
+                _hashSecret);
     }
 
     /// <summary>
     /// Классическая схема адресации: номер сектора — в первых двух байтах
     /// пакета (D1), проверка — хеш сектора под хеш заголовка слота.
     /// </summary>
-    private static bool SectorMatchesClassic(
+    private bool SectorMatchesClassic(
         ReadOnlySpan<byte> packet, ReceptionSlot slot)
     {
         var sectorNum = packet[0] | (packet[1] << 8);
         if (sectorNum < 0 || sectorNum >= slot.TotalVolumeCount)
             return false;
 
-        return PacketHasher.VerifySectorPacket(packet, slot.HeaderHash);
+        return PacketHasher.VerifySectorPacket(packet, slot.HeaderHash, _hashSecret);
     }
 
     /// <summary>
@@ -456,7 +467,8 @@ public sealed class StreamProcessor : DataProcessorBase, IDisposable
                 slot.HeaderHash,
                 slot.TotalVolumeCount,
                 slot.VirtualIndexCursor,
-                out var index))
+                out var index,
+                _hashSecret))
         {
             return false;
         }

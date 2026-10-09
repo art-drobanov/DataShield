@@ -29,9 +29,10 @@ public static class BinaryDamage
     /// </summary>
     public static int CorruptPackets(
         byte[] stream, int maxCount, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var indices = CollectSectorIndices(stream, headerHash, scheme, sectorCount);
+        var indices = CollectSectorIndices(stream, headerHash, scheme, sectorCount, hashSecret);
         RandomInput.Shuffle(indices, rng);
 
         var corrupted = Math.Min(maxCount, indices.Count);
@@ -51,9 +52,10 @@ public static class BinaryDamage
     /// </summary>
     public static byte[] RemovePackets(
         byte[] stream, int maxCount, byte[] headerHash, Random rng, out int removed,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var indices = CollectSectorIndices(stream, headerHash, scheme, sectorCount);
+        var indices = CollectSectorIndices(stream, headerHash, scheme, sectorCount, hashSecret);
         RandomInput.Shuffle(indices, rng);
 
         var dropSet = new HashSet<int>(indices.Take(Math.Min(maxCount, indices.Count)));
@@ -82,7 +84,8 @@ public static class BinaryDamage
     /// </summary>
     public static byte[] TruncateTail(
         byte[] stream, int maxSectorLoss, byte[] headerHash, Random rng, out int lostSectors,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
         lostSectors = 0;
         var packetCount = stream.Length / PacketFormat.PacketSize;
@@ -95,14 +98,14 @@ public static class BinaryDamage
         {
             var lost = 0;
             for (var i = packetCount - drop; i < packetCount; i++)
-                if (IsSectorAt(stream, i, headerHash, scheme, sectorCount)) lost++;
+                if (IsSectorAt(stream, i, headerHash, scheme, sectorCount, hashSecret)) lost++;
 
             if (lost > maxSectorLoss) continue;
 
             var headersKept = 0;
             for (var i = 0; i < packetCount - drop; i++)
                 if (PacketProbe.IsHeader(stream.AsSpan(
-                        i * PacketFormat.PacketSize, PacketFormat.PacketSize)))
+                        i * PacketFormat.PacketSize, PacketFormat.PacketSize), hashSecret))
                     headersKept++;
 
             if (headersKept < 2) continue;
@@ -126,9 +129,9 @@ public static class BinaryDamage
     /// Смещение вычисляется в координатах переданного (выровненного) потока.
     /// </summary>
     public static (int Offset, byte[] Payload)? PlanDesync(
-        byte[] stream, Random rng, bool lossy)
+        byte[] stream, Random rng, bool lossy, string? hashSecret = null)
     {
-        var offset = ChooseOffset(stream, lossy, rng);
+        var offset = ChooseOffset(stream, lossy, rng, hashSecret);
         return offset < 0
             ? null
             : (offset, RandomInput.Bytes(1 + rng.Next(7), rng));
@@ -140,9 +143,9 @@ public static class BinaryDamage
     /// как у <see cref="PlanDesync"/>.
     /// </summary>
     public static (int Offset, byte[] Payload)? PlanTextGap(
-        byte[] stream, Random rng, bool lossy)
+        byte[] stream, Random rng, bool lossy, string? hashSecret = null)
     {
-        var offset = ChooseOffset(stream, lossy, rng);
+        var offset = ChooseOffset(stream, lossy, rng, hashSecret);
         return offset < 0 ? null : (offset, TextGapPayload.ToArray());
     }
 
@@ -153,14 +156,14 @@ public static class BinaryDamage
     /// иначе — на границе пакетов.
     /// </summary>
     public static (int Offset, byte[] Payload)? PlanFragment(
-        byte[] stream, Random rng, bool lossy)
+        byte[] stream, Random rng, bool lossy, string? hashSecret = null)
     {
         var packetCount = stream.Length / PacketFormat.PacketSize;
 
         var sources = new List<int>();
         for (var i = 0; i < packetCount; i++)
             if (!PacketProbe.IsHeader(stream.AsSpan(
-                    i * PacketFormat.PacketSize, PacketFormat.PacketSize)))
+                    i * PacketFormat.PacketSize, PacketFormat.PacketSize), hashSecret))
                 sources.Add(i);
 
         if (sources.Count == 0) return null;
@@ -172,7 +175,7 @@ public static class BinaryDamage
             (source + start)..(source + start + length)]
             .ToArray();
 
-        var offset = ChooseOffset(stream, lossy, rng);
+        var offset = ChooseOffset(stream, lossy, rng, hashSecret);
         return offset < 0 ? null : (offset, payload);
     }
 
@@ -213,7 +216,7 @@ public static class BinaryDamage
     /// не менее двух оставшихся копий.
     /// Возвращает -1, если кандидатов нет.
     /// </summary>
-    private static int ChooseLossyOffset(byte[] stream, Random rng)
+    private static int ChooseLossyOffset(byte[] stream, Random rng, string? hashSecret)
     {
         var packetCount = stream.Length / PacketFormat.PacketSize;
 
@@ -221,7 +224,7 @@ public static class BinaryDamage
         for (var i = 0; i < packetCount; i++)
         {
             if (!PacketProbe.IsHeader(stream.AsSpan(
-                    i * PacketFormat.PacketSize, PacketFormat.PacketSize)))
+                    i * PacketFormat.PacketSize, PacketFormat.PacketSize), hashSecret))
                 candidates.Add(i);
         }
 
@@ -236,9 +239,10 @@ public static class BinaryDamage
     /// Смещение вставки: lossy — внутри случайного сектора,
     /// иначе — граница пакетов.
     /// </summary>
-    private static int ChooseOffset(byte[] stream, bool lossy, Random rng)
+    private static int ChooseOffset(
+        byte[] stream, bool lossy, Random rng, string? hashSecret)
     {
-        if (lossy) return ChooseLossyOffset(stream, rng);
+        if (lossy) return ChooseLossyOffset(stream, rng, hashSecret);
 
         var packetCount = stream.Length / PacketFormat.PacketSize;
         if (packetCount >= 2)
@@ -249,19 +253,20 @@ public static class BinaryDamage
     /// <summary>Пакет по индексу является корректным сектором.</summary>
     private static bool IsSectorAt(
         byte[] stream, int packetIndex, byte[] headerHash,
-        SectorScheme scheme, int sectorCount) =>
+        SectorScheme scheme, int sectorCount, string? hashSecret) =>
         PacketProbe.IsValidSector(stream.AsSpan(
             packetIndex * PacketFormat.PacketSize, PacketFormat.PacketSize),
-            headerHash, scheme, sectorCount);
+            headerHash, scheme, sectorCount, hashSecret);
 
     /// <summary>Индексы пакетов, являющихся корректными секторами.</summary>
     private static List<int> CollectSectorIndices(
-        byte[] stream, byte[] headerHash, SectorScheme scheme, int sectorCount)
+        byte[] stream, byte[] headerHash, SectorScheme scheme, int sectorCount,
+        string? hashSecret)
     {
         var result = new List<int>();
         var packetCount = stream.Length / PacketFormat.PacketSize;
         for (var i = 0; i < packetCount; i++)
-            if (IsSectorAt(stream, i, headerHash, scheme, sectorCount))
+            if (IsSectorAt(stream, i, headerHash, scheme, sectorCount, hashSecret))
                 result.Add(i);
         return result;
     }

@@ -75,7 +75,7 @@ public sealed class StreamDecoder : StreamCodec
     public IReadOnlyList<byte[]> AcceptedSignatures => _processor.AcceptedSignatures;
 
     /// <summary>
-    /// Секрет хеширования операции (контекстен, см. <see cref="SecretScopeGuard"/>):
+    /// Секрет хеширования операции:
     /// должен совпадать с секретом кодирования, иначе заголовки не опознаются.
     /// null/пустая строка — обычный режим без секрета.
     /// </summary>
@@ -124,7 +124,8 @@ public sealed class StreamDecoder : StreamCodec
             _searchOptions,
             sectorScheme: sectorScheme,
             virtualIndexSectorLimit: virtualIndexSectorLimit,
-            signatureMode: signatureMode);
+            signatureMode: signatureMode,
+            hashSecret: hashSecret);
         _processor.HeaderAccepted += OnHeaderAccepted;
     }
 
@@ -257,7 +258,6 @@ public sealed class StreamDecoder : StreamCodec
         {
             ThrowIfDisposed();
 
-            using var _ = new SecretScopeGuard(_hashSecret);
             var signatures = _processor.SignaturesForCheck();
 
             var hb = header.ToBytes();
@@ -325,7 +325,6 @@ public sealed class StreamDecoder : StreamCodec
         bool text, IDataSource source, long totalBytes,
         IProgress<CodecProgress>? progress, CancellationToken ct)
     {
-        using var _ = new SecretScopeGuard(_hashSecret);
         VerifySha256();
 
         var scanner = text ? GetTxtScanner() : GetBinScanner();
@@ -463,7 +462,7 @@ public sealed class StreamDecoder : StreamCodec
             scanner.RequestRescan(
                 (window, out emitted) => RebindWindow(
                     window, headerHash, total, text,
-                    SectorScheme, VirtualIndexSectorLimit, out emitted));
+                    SectorScheme, VirtualIndexSectorLimit, _hashSecret, out emitted));
             return;
         }
 
@@ -477,7 +476,7 @@ public sealed class StreamDecoder : StreamCodec
         scanner.RequestRescan(
             (window, out emitted) => RebindWindow(
                 window, headerHash, total, text,
-                SectorScheme, VirtualIndexSectorLimit, out emitted));
+                SectorScheme, VirtualIndexSectorLimit, _hashSecret, out emitted));
         scanner.Complete();
 
         _processor.Detach();
@@ -495,7 +494,8 @@ public sealed class StreamDecoder : StreamCodec
     /// </summary>
     private static int RebindWindow(
         ReadOnlySpan<byte> window, byte[] headerHash, int total, bool text,
-        SectorScheme sectorScheme, int virtualIndexLimit, out byte[]? emitted)
+        SectorScheme sectorScheme, int virtualIndexLimit, string? hashSecret,
+        out byte[]? emitted)
     {
         emitted = null;
 
@@ -512,7 +512,7 @@ public sealed class StreamDecoder : StreamCodec
 
         var sectorNum = packet[0] | (packet[1] << 8);
         if (sectorNum >= 0 && sectorNum < total &&
-            PacketHasher.VerifySectorPacket(packet, headerHash))
+            PacketHasher.VerifySectorPacket(packet, headerHash, hashSecret))
         {
             emitted = packet;
             return text ? PacketFormat.Base64Size : PacketFormat.PacketSize;
@@ -520,7 +520,7 @@ public sealed class StreamDecoder : StreamCodec
 
         if (sectorScheme == SectorScheme.VirtualIndex &&
             total <= virtualIndexLimit &&
-            VirtualIndexHasher.TryVerifyPacket(packet, headerHash, total, 0, out _))
+            VirtualIndexHasher.TryVerifyPacket(packet, headerHash, total, 0, out _, hashSecret))
         {
             emitted = packet;
             return text ? PacketFormat.Base64Size : PacketFormat.PacketSize;

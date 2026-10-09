@@ -48,45 +48,32 @@ public sealed class SignatureTests
     }
 
     /// <summary>
-    /// Режим «секрет»: без секрета идентичен обычному хешу, с секретом —
-    /// хеш конкатенации (секрет ‖ данные); Test() проходит в обоих режимах.
-    /// Секрет — контекстное состояние, снимается в finally.
+    /// Режим «секрет»: без секрета (null/пустая) идентичен обычному хешу,
+    /// с секретом — хеш конкатенации (секрет ‖ данные); Test() проходит
+    /// в обоих режимах. Секрет передаётся явным параметром.
     /// </summary>
     [Fact]
     public void SecureHashes_Secret_Prefix_Scheme()
     {
         var data = RandomBytes(300, 2);
-        var secret = Encoding.UTF8.GetBytes("top-secret-ключ");
+        var secret = "top-secret-ключ";
+        var secretBytes = Encoding.UTF8.GetBytes(secret);
 
-        try
-        {
-            Sha256Secure.HashSecret = null;
-            Sha512Secure.HashSecret = null;
+        Assert.Equal(Sha256Compact.HashData(data), Sha256Secure.HashData(data, null));
+        Assert.Equal(Sha512Compact.HashData(data), Sha512Secure.HashData(data, null));
+        Assert.True(Sha256Secure.Test());
+        Assert.True(Sha512Secure.Test());
 
-            Assert.Equal(Sha256Compact.HashData(data), Sha256Secure.HashData(data));
-            Assert.Equal(Sha512Compact.HashData(data), Sha512Secure.HashData(data));
-            Assert.True(Sha256Secure.Test());
-            Assert.True(Sha512Secure.Test());
+        Assert.Equal(Sha256Compact.HashData(secretBytes.Concat(data).ToArray()),
+            Sha256Secure.HashData(data, secret));
+        Assert.NotEqual(Sha256Compact.HashData(data), Sha256Secure.HashData(data, secret));
 
-            Sha256Secure.HashSecret = "top-secret-ключ";
-            Sha512Secure.HashSecret = "top-secret-ключ";
+        Assert.Equal(Sha512Compact.HashData(secretBytes.Concat(data).ToArray()),
+            Sha512Secure.HashData(data, secret));
+        Assert.NotEqual(Sha512Compact.HashData(data), Sha512Secure.HashData(data, secret));
 
-            Assert.Equal(Sha256Compact.HashData(secret.Concat(data).ToArray()),
-                Sha256Secure.HashData(data));
-            Assert.NotEqual(Sha256Compact.HashData(data), Sha256Secure.HashData(data));
-
-            Assert.Equal(Sha512Compact.HashData(secret.Concat(data).ToArray()),
-                Sha512Secure.HashData(data));
-            Assert.NotEqual(Sha512Compact.HashData(data), Sha512Secure.HashData(data));
-
-            Assert.True(Sha256Secure.Test());
-            Assert.True(Sha512Secure.Test());
-        }
-        finally
-        {
-            Sha256Secure.HashSecret = null;
-            Sha512Secure.HashSecret = null;
-        }
+        Assert.True(Sha256Secure.Test());
+        Assert.True(Sha512Secure.Test());
     }
 
     /// <summary>
@@ -254,8 +241,7 @@ public sealed class SignatureTests
     /// Roundtrip с секретом через ctor: хеши «на проводе» защищены
     /// (отличаются от реальных), декодер с тем же секретом собирает файл
     /// и принимает защищённую сигнатуру, декодер с чужим секретом не
-    /// опознаёт заголовки. Секрет контекстен — глобальные
-    /// Sha*Secure.HashSecret не затрагиваются.
+    /// опознаёт заголовки.
     /// </summary>
     [Fact]
     public void Secret_Roundtrip_Protects_OnWire_Hashes()
@@ -270,10 +256,6 @@ public sealed class SignatureTests
         Assert.NotEqual(Sha512Compact.HashData(content), stats.Sha512);
         Assert.Equal(Sha512Compact.HashData(content), stats.RealSha512);
 
-        // Операции с ctor-секретом не затрагивают глобальный скоуп
-        Assert.Null(Sha256Secure.HashSecret);
-        Assert.Null(Sha512Secure.HashSecret);
-
         var decoder = new StreamDecoder(hashSecret: "один-секрет");
         decoder.Scan(PacketIO.WriteBinaryBytes(packets));
 
@@ -281,9 +263,6 @@ public sealed class SignatureTests
         Assert.True(decoder.SignatureCheckActive);
         Assert.Equal(stats.Sha512, Assert.Single(decoder.AcceptedSignatures));
         Assert.Equal(content, decoder.TryAssemble(slot.Header));
-
-        Assert.Null(Sha256Secure.HashSecret);
-        Assert.Null(Sha512Secure.HashSecret);
 
         var stranger = new StreamDecoder(hashSecret: "чужой-секрет");
         stranger.Scan(PacketIO.WriteBinaryBytes(packets));
@@ -293,7 +272,7 @@ public sealed class SignatureTests
     /// <summary>
     /// Параллельные операции с разными секретами изолированы: каждая
     /// защищает собственные хеши «на проводе» (все различны), реальные
-    /// хеши совпадают, глобальный скоуп остаётся пустым.
+    /// хеши совпадают.
     /// </summary>
     [Fact]
     public async Task Parallel_Operations_With_Different_Secrets_Are_Isolated()
@@ -318,7 +297,5 @@ public sealed class SignatureTests
 
         Assert.Equal(3, results.Select(s => Convert.ToHexString(s.Sha256)).Distinct().Count());
         Assert.Equal(3, results.Select(s => Convert.ToHexString(s.Sha512!)).Distinct().Count());
-        Assert.Null(Sha256Secure.HashSecret);
-        Assert.Null(Sha512Secure.HashSecret);
     }
 }

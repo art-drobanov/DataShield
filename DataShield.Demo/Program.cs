@@ -817,30 +817,6 @@ internal static class Program
         return wrong;
     }
 
-    /// <summary>
-    /// Повреждения с секретом хеширования: хеши пакетов «на проводе»
-    /// защищены префиксом секрета, поэтому движок повреждений (распознавание
-    /// заголовков и секторов, подделка коллизий) считает хеши в том же
-    /// режиме — секрет устанавливается контекстно на время операции.
-    /// </summary>
-    private static DamageResult ApplyDamageWithSecret(
-        ScenarioPlan plan,
-        IReadOnlyList<(IReadOnlyList<byte[]> Packets, EncodeStats Stats)> encoded,
-        Random rng, string? secret)
-    {
-        Sha256Secure.HashSecret = secret;
-        Sha512Secure.HashSecret = secret;
-        try
-        {
-            return ScenarioEngine.ApplyDamage(plan, encoded, rng);
-        }
-        finally
-        {
-            Sha256Secure.HashSecret = null;
-            Sha512Secure.HashSecret = null;
-        }
-    }
-
     // ------------- Одна итерация: кодирование → повреждения → декодирование -------------
 
     /// <summary>Результат итерации плюс тайминги, объём и метки для ротации сида.</summary>
@@ -919,7 +895,7 @@ internal static class Program
         // Повреждения: комбинированные в бюджете или сверх бюджета (план);
         // коллизии версий — адверсариальный случай, учитываемый проверкой
         // итогового стресса
-        var damage = ApplyDamageWithSecret(plan, [(packets, stats)], rng, secret);
+        var damage = ScenarioEngine.ApplyDamage(plan, [(packets, stats)], rng, secret);
 
         // Декодирование: случайная реализация контракта; схема приёмника
         // соответствует схеме файла: для B — гибридный приём (флаг
@@ -1084,7 +1060,7 @@ internal static class Program
         // есть файл B, декодер гибридный (флаг VirtualIndex читает схемы
         // A и B одновременно); поток из одних A принимает классический
         // приёмник.
-        var damage = ApplyDamageWithSecret(plan, encoded, rng, secret);
+        var damage = ScenarioEngine.ApplyDamage(plan, encoded, rng, secret);
 
         var anyVirtual = files.Any(f => f.Scheme == SectorScheme.VirtualIndex);
         var (decoder, decTag) = CodecVariants.CreateCodec(

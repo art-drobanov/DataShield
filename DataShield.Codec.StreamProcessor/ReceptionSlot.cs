@@ -33,6 +33,9 @@ public sealed class ReceptionSlot
     // Настройки поиска версий (лимиты перебора, эвристики, стадии 3)
     private readonly SectorVersionSearchOptions _searchOptions;
 
+    // Секрет хеширования операции (null/пустая — без секрета)
+    private readonly string? _hashSecret;
+
     // Последняя сборка прошла Exact(SHA-256), но не подтверждена Any(SHA-512)
     private bool _signatureRejected;
 
@@ -120,15 +123,18 @@ public sealed class ReceptionSlot
     /// <param name="headerBytes">Сериализованный заголовок (51 байт).</param>
     /// <param name="header">Распарсенный заголовок.</param>
     /// <param name="headerHash">Хеш заголовка (поле H5, 24 байта).</param>
+    /// <param name="hashSecret">Секрет хеширования операции (null/пустая — без секрета).</param>
     internal ReceptionSlot(
         byte[] headerBytes,
         HeaderContent header,
-        byte[] headerHash)
+        byte[] headerHash,
+        string? hashSecret = null)
         : this(
             headerBytes,
             header,
             headerHash,
-            SectorVersionSearchOptions.Default)
+            SectorVersionSearchOptions.Default,
+            hashSecret)
     {
     }
 
@@ -139,16 +145,19 @@ public sealed class ReceptionSlot
     /// <param name="header">Распарсенный заголовок.</param>
     /// <param name="headerHash">Хеш заголовка (поле H5, 24 байта).</param>
     /// <param name="searchOptions">Настройки обхода коллизий версий.</param>
+    /// <param name="hashSecret">Секрет хеширования операции (null/пустая — без секрета).</param>
     public ReceptionSlot(
         byte[] headerBytes,
         HeaderContent header,
         byte[] headerHash,
-        SectorVersionSearchOptions searchOptions)
+        SectorVersionSearchOptions searchOptions,
+        string? hashSecret = null)
     {
         searchOptions.Validate();
 
         _headerBytes = headerBytes;
         _searchOptions = searchOptions;
+        _hashSecret = hashSecret;
 
         Header = header;
         HeaderHash = headerHash;
@@ -1051,7 +1060,7 @@ public sealed class ReceptionSlot
             ? buffer
             : buffer.AsSpan(0, (int)Header.FileSize).ToArray();
 
-        var hash = Sha256Secure.HashData(result);
+        var hash = Sha256Secure.HashData(result, _hashSecret);
 
         if (!hash.AsSpan().SequenceEqual(Header.Sha256))
         {
@@ -1073,12 +1082,12 @@ public sealed class ReceptionSlot
 
     // SHA-512 содержимого (значение «на проводе», Sha256Secure-аналог для
     // 512 бит) совпадает хотя бы с одной принятой сигнатурой.
-    private static bool ConfirmedByAnySignature(
+    private bool ConfirmedByAnySignature(
         byte[] result,
         IReadOnlyList<byte[]> acceptedSignatures)
     {
         Span<byte> hash = stackalloc byte[PacketFormat.SignatureSize];
-        Sha512Secure.HashData(result, hash);
+        Sha512Secure.HashData(result, _hashSecret, hash);
 
         foreach (var signature in acceptedSignatures)
         {

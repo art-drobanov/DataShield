@@ -16,8 +16,9 @@ namespace DataShield.Codec.Packets;
 /// расширенную проверку, если его SHA-512 совпадает хотя бы с одной
 /// принятой сигнатурой S1.
 ///
-/// Хеши вычисляются через <c>Sha512Secure</c>: в режиме «с секретом»
-/// значения «на проводе» защищены (секрет — байтовый префикс потока).
+/// Хеши вычисляются через <c>Sha512Secure</c>: секрет передаётся явным
+/// параметром (hashSecret) — с секретом значения «на проводе» защищены
+/// (секрет — байтовый префикс потока).
 /// </summary>
 public static class SignaturePacket
 {
@@ -25,17 +26,19 @@ public static class SignaturePacket
     /// Собрать сигнатурный пакет: S1 = SHA-512(content), S2 = Trunc11(SHA-512(S1)).
     /// </summary>
     /// <param name="content">Содержимое файла.</param>
-    public static byte[] Build(ReadOnlySpan<byte> content)
+    /// <param name="hashSecret">Секрет хеширования (null/пустая — без секрета).</param>
+    public static byte[] Build(ReadOnlySpan<byte> content, string? hashSecret = null)
     {
         var packet = new byte[PacketFormat.PacketSize];
-        BuildInto(content, packet);
+        BuildInto(content, packet, hashSecret);
         return packet;
     }
 
     /// <inheritdoc cref="Build(ReadOnlySpan{byte})"/>
     /// <param name="content">Содержимое файла.</param>
     /// <param name="packet">Буфер пакета (75 байт).</param>
-    public static void BuildInto(ReadOnlySpan<byte> content, Span<byte> packet)
+    /// <param name="hashSecret">Секрет хеширования (null/пустая — без секрета).</param>
+    public static void BuildInto(ReadOnlySpan<byte> content, Span<byte> packet, string? hashSecret = null)
     {
         if (packet.Length != PacketFormat.PacketSize)
             throw new ArgumentException(
@@ -44,8 +47,9 @@ public static class SignaturePacket
 
         Sha512Secure.HashData(
             content,
+            hashSecret,
             packet[..PacketFormat.SignatureSize]);
-        WriteTag(packet);
+        WriteTag(packet, hashSecret);
     }
 
     /// <summary>
@@ -53,11 +57,12 @@ public static class SignaturePacket
     /// хеша содержимого — используется, когда SHA-512 уже вычислен).
     /// </summary>
     /// <param name="signature">Сигнатура SHA-512 (64 байта).</param>
-    public static byte[] BuildFromSignature(ReadOnlySpan<byte> signature)
+    /// <param name="hashSecret">Секрет хеширования (null/пустая — без секрета).</param>
+    public static byte[] BuildFromSignature(ReadOnlySpan<byte> signature, string? hashSecret = null)
     {
         var packet = new byte[PacketFormat.PacketSize];
         signature.CopyTo(packet);
-        WriteTag(packet);
+        WriteTag(packet, hashSecret);
         return packet;
     }
 
@@ -65,7 +70,7 @@ public static class SignaturePacket
     /// Полный пакет (75 байт) является корректным сигнатурным:
     /// S2 совпадает с Trunc11(SHA-512(S1)).
     /// </summary>
-    public static bool Verify(ReadOnlySpan<byte> packet)
+    public static bool Verify(ReadOnlySpan<byte> packet, string? hashSecret = null)
     {
         if (packet.Length != PacketFormat.PacketSize)
             return false;
@@ -73,6 +78,7 @@ public static class SignaturePacket
         Span<byte> hash = stackalloc byte[PacketFormat.SignatureSize];
         Sha512Secure.HashData(
             packet[..PacketFormat.SignatureSize],
+            hashSecret,
             hash);
 
         return hash[..PacketFormat.SignatureTagSize].SequenceEqual(
@@ -91,11 +97,12 @@ public static class SignaturePacket
     }
 
     // S2 = Trunc11(SHA-512(S1)) в хвост пакета.
-    private static void WriteTag(Span<byte> packet)
+    private static void WriteTag(Span<byte> packet, string? hashSecret)
     {
         Span<byte> hash = stackalloc byte[PacketFormat.SignatureSize];
         Sha512Secure.HashData(
             packet[..PacketFormat.SignatureSize],
+            hashSecret,
             hash);
         hash[..PacketFormat.SignatureTagSize].CopyTo(
             packet[PacketFormat.SignatureTagOffset..]);

@@ -1,4 +1,6 @@
-﻿namespace DataShield.Interfaces;
+﻿using System.Reflection;
+
+namespace DataShield.Interfaces;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Общие метаданные сборки продукта
@@ -11,5 +13,8 @@
 public static class BuildInfo
 {
     /// <summary>Маркер этапа разработки, выводимый рядом с версией сборки.</summary>
-    public const string BuildLabel = "Alpha-XVI";
+    public static string BuildLabel { get; } =
+        typeof(BuildInfo).Assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "BuildLabel")?.Value ?? string.Empty;
 }

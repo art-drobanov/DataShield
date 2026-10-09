@@ -7,9 +7,9 @@
     http://www.apache.org/licenses/LICENSE-2.0
 
     Unless required by applicable law Or agreed To In writing, software
-    distributed under the License Is distributed On An "AS IS" BASIS,
-    WITHOUT WARRANTIES OR CONDITIONS Of ANY KIND, either express Or implied.
-    See the License For the specific language governing permissions And
+    distributed under the License is distributed on An "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions And
     limitations under the License.
 */
 
@@ -17,72 +17,57 @@ using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text;
 
-// SHA-256 с режимом «секрет»: секрет — байтовый префикс потока в каждом вызове
-// (аналог HMAC на базе стандартного хеша). Без HashSecret идентичен Sha256Compact.
-public static class Sha256Secure
+public static class Sha256Secure // 997ecdb10c9f957e7c1bc29255084b9c1f156d4ee9b36e943711751460b87dda
 {
-    private sealed class SecretScope
-    {
-        public readonly string Text;
-        public readonly byte[]? Bytes;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static byte[] HashData(byte[] data, string? secret) => HashData(data.AsSpan(), secret);
 
-        public SecretScope(string text, byte[]? bytes)
+    public static byte[] HashData(ReadOnlySpan<byte> data, string? secret)
+    {
+        byte[] hash = new byte[32];
+        HashData(data, secret, hash);
+        return hash;
+    }
+
+    public static void HashData(ReadOnlySpan<byte> data, string? secret, Span<byte> hash)
+    {
+        if (hash.Length < 32)
+            throw new ArgumentException(nameof(hash));
+        if (string.IsNullOrEmpty(secret))
         {
-            Text = text;
-            Bytes = bytes;
+            Sha256Compact.HashData(data, hash);
+            return;
         }
-    }
-
-    private static readonly AsyncLocal<SecretScope?> Scope = new();
-
-    public static string? HashSecret
-    {
-        get => Scope.Value?.Text;
-        set => Scope.Value = string.IsNullOrEmpty(value)
-            ? null
-            : new SecretScope(value, Encoding.UTF8.GetBytes(value));
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static byte[] HashData(byte[] data) => HashData(data.AsSpan());
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static byte[] HashData(ReadOnlySpan<byte> data)
-    {
-        byte[] hash = new byte[32]; HashData(data, hash); return hash;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void HashData(ReadOnlySpan<byte> data, Span<byte> hash)
-    {
-        if (hash.Length < 32) throw new ArgumentException(nameof(hash));
-        var secret = Scope.Value?.Bytes;
-        if (secret is null || secret.Length == 0) { Sha256Compact.HashData(data, hash); return; }
+        byte[] secretBytes = Encoding.UTF8.GetBytes(secret);
         byte[]? rented = null;
-        var total = secret.Length + data.Length;
+        int total = secretBytes.Length + data.Length;
         Span<byte> input = total <= 4096
             ? stackalloc byte[4096]
             : rented = ArrayPool<byte>.Shared.Rent(total);
         try
         {
-            secret.CopyTo(input); data.CopyTo(input[secret.Length..]);
+            secretBytes.CopyTo(input);
+            data.CopyTo(input[secretBytes.Length..]);
             Sha256Compact.HashData(input[..total], hash);
         }
-        finally { if (rented is not null) ArrayPool<byte>.Shared.Return(rented); }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool Test()
     {
-        if (!Sha256Compact.Test()) return false;
-        var secret = Scope.Value?.Bytes;
-        if (secret is null || secret.Length == 0) return true;
-        var concat = new byte[secret.Length + 3];
-        secret.CopyTo(concat, 0);
-        concat[^3] = 0x61; concat[^2] = 0x62; concat[^1] = 0x63;
-        Span<byte> h1 = stackalloc byte[32]; Span<byte> h2 = stackalloc byte[32];
-        HashData(concat.AsSpan(secret.Length), h1);
-        Sha256Compact.HashData(concat, h2);
-        return h1.SequenceEqual(h2);
+        if (!Sha256Compact.Test())
+            return false;
+        byte[] secretBytes = Encoding.UTF8.GetBytes("secret");
+        byte[] data = [0x61, 0x62, 0x63];
+        byte[] concat = [.. secretBytes, .. data];
+        Span<byte> salted = stackalloc byte[32];
+        Span<byte> expected = stackalloc byte[32];
+        HashData(data, "secret", salted);
+        Sha256Compact.HashData(concat, expected);
+        return salted.SequenceEqual(expected);
     }
 }

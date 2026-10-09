@@ -77,17 +77,17 @@ public sealed class CodecReportTests : IDisposable
         CodecReport.WriteEncoding(reportPath, stats, "test-42.bin");
 
         var lines = File.ReadAllLines(reportPath);
-        Assert.Contains("         DataShield : Encoding report", lines);
-        Assert.Contains($"         {"File name".PadRight(10)} : test-42.bin", lines);
-        Assert.Contains($"         {"SHA-256".PadRight(10)} : {Hex(stats.RealSha256 ?? stats.Sha256)}", lines);
+        Assert.Contains("    DataShield : Encoding report", lines);
+        Assert.Contains($"    {"File name".PadRight(10)} : test-42.bin", lines);
+        Assert.Contains($"    {"SHA-256".PadRight(10)} : {Hex(stats.RealSha256 ?? stats.Sha256)}", lines);
 
         var sha512 = Hex(Sha512Compact.HashData(content));
-        Assert.Contains($"         {"SHA-512".PadRight(10)} : {sha512[..64]}", lines);
-        Assert.Contains(new string(' ', 9 + 10 + 3) + sha512[64..], lines);
+        Assert.Contains($"    {"SHA-512".PadRight(10)} : {sha512[..64]}", lines);
+        Assert.Contains(new string(' ', 4 + 10 + 3) + sha512[64..], lines);
 
-        Assert.Contains($"         {"Headers".PadRight(10)} : {stats.HeaderCopies}", lines);
-        Assert.Contains($"         {"Signatures".PadRight(10)} : {stats.SignatureCopies}", lines);
-        Assert.Contains($"         {"Packets".PadRight(10)} : {stats.TotalPackets}", lines);
+        Assert.Contains($"    {"Headers".PadRight(10)} : {stats.HeaderCopies}", lines);
+        Assert.Contains($"    {"Signatures".PadRight(10)} : {stats.SignatureCopies}", lines);
+        Assert.Contains($"    {"Packets".PadRight(10)} : {stats.TotalPackets}", lines);
     }
 
     /// <summary>
@@ -170,9 +170,9 @@ public sealed class CodecReportTests : IDisposable
         CodecReport.WriteEncoding(reportPath, stats, "test-9.bin");
 
         var lines = File.ReadAllLines(reportPath);
-        Assert.Contains($"         {"SHA-256".PadRight(10)} : {Hex(sha256)}*", lines);
+        Assert.Contains($"    {"SHA-256".PadRight(10)} : {Hex(sha256)}*", lines);
         var hex512 = Hex(sha512);
-        Assert.Contains(new string(' ', 9 + 10 + 3) + hex512[64..] + "*", lines);
+        Assert.Contains(new string(' ', 4 + 10 + 3) + hex512[64..] + "*", lines);
     }
 
     /// <summary>
@@ -197,22 +197,21 @@ public sealed class CodecReportTests : IDisposable
     }
 
     /// <summary>
-    /// Контрольная сумма потока после декодирования: файл «поток».sha256
+    /// Контрольная сумма восстановленного файла: «файл».sha256
     /// в формате sha256sum («hex␣␣имя» + перевод строки).
     /// </summary>
     [Fact]
     public void WriteSha256Sidecar_Writes_Checksum_Line()
     {
         var content = RandomBytes(700, 13);
-        var streamPath = Path.Combine(_dir, "Rar-short.txt.DataShield.bin");
-        File.WriteAllBytes(streamPath, content);
+        var restoredPath = Path.Combine(_dir, "Rar-short.txt");
 
-        CodecReport.WriteSha256Sidecar(streamPath);
+        CodecReport.WriteSha256Sidecar(restoredPath, content);
 
-        var sidecar = streamPath + ".sha256";
+        var sidecar = restoredPath + ".sha256";
         Assert.True(File.Exists(sidecar));
         Assert.Equal(
-            Hex(Sha256Compact.HashData(content)) + "  Rar-short.txt.DataShield.bin\n",
+            Hex(Sha256Compact.HashData(content)) + "  Rar-short.txt\n",
             File.ReadAllText(sidecar));
     }
 

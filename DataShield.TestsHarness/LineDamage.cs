@@ -67,9 +67,10 @@ public static class LineDamage
     /// </summary>
     public static int CorruptSectors(
         List<string> lines, int maxCount, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var candidates = CollectSectorIndices(lines, headerHash, scheme, sectorCount);
+        var candidates = CollectSectorIndices(lines, headerHash, scheme, sectorCount, hashSecret);
         RandomInput.Shuffle(candidates, rng);
 
         var corrupted = 0;
@@ -91,9 +92,10 @@ public static class LineDamage
     /// <summary>Удаление до <paramref name="maxCount"/> корректных секторов.</summary>
     public static int RemoveSectors(
         List<string> lines, int maxCount, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var candidates = CollectSectorIndices(lines, headerHash, scheme, sectorCount);
+        var candidates = CollectSectorIndices(lines, headerHash, scheme, sectorCount, hashSecret);
         RandomInput.Shuffle(candidates, rng);
 
         var selected = candidates
@@ -114,16 +116,17 @@ public static class LineDamage
     /// </summary>
     public static bool InjectCollision(
         List<string> lines, byte[] headerHash, Random rng,
-        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0)
+        SectorScheme scheme = SectorScheme.Classic, int sectorCount = 0,
+        string? hashSecret = null)
     {
-        var candidates = CollectSectorIndices(lines, headerHash, scheme, sectorCount);
+        var candidates = CollectSectorIndices(lines, headerHash, scheme, sectorCount, hashSecret);
         if (candidates.Count == 0) return false;
 
         var index = candidates[rng.Next(candidates.Count)];
         if (!PacketProbe.TryGetPacket(lines[index], out var packet)) return false;
 
         var correct = lines[index];
-        var forged = PacketProbe.ForgeSectorVariant(packet, headerHash, rng, scheme, sectorCount);
+        var forged = PacketProbe.ForgeSectorVariant(packet, headerHash, rng, scheme, sectorCount, hashSecret);
 
         lines.Insert(rng.Next(lines.Count + 1), Convert.ToBase64String(forged));
         lines.Insert(rng.Next(lines.Count + 1), correct);
@@ -153,14 +156,14 @@ public static class LineDamage
     /// </summary>
     private static List<int> CollectSectorIndices(
         List<string> lines, byte[] headerHash,
-        SectorScheme scheme, int sectorCount)
+        SectorScheme scheme, int sectorCount, string? hashSecret)
     {
         var result = new List<int>();
         for (var i = 0; i < lines.Count; i++)
         {
             if (!PacketProbe.TryGetPacket(lines[i], out var packet)) continue;
-            if (PacketProbe.IsHeader(packet)) continue;
-            if (!PacketProbe.IsValidSector(packet, headerHash, scheme, sectorCount)) continue;
+            if (PacketProbe.IsHeader(packet, hashSecret)) continue;
+            if (!PacketProbe.IsValidSector(packet, headerHash, scheme, sectorCount, hashSecret)) continue;
             result.Add(i);
         }
         return result;
